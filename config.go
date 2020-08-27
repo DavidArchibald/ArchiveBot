@@ -10,28 +10,28 @@ import (
 
 // Config is the toml config that houses all of ArchiveBot's information.
 type Config struct {
-	Subreddit Subreddit
-	Pushshift Pushshift
-	Redis     Redis
+	Subreddit Subreddit   `toml:"Subreddit"`
+	Pushshift Pushshift   `toml:"Pushshift"`
+	Redis     RedisConfig `toml:"Redis"`
 }
 
 // Subreddit is the configuration for a subreddit.
 type Subreddit struct {
-	Name  string
-	Limit int64
+	Name  string `toml:"name"`
+	Limit int64  `toml:"search_limit"`
 }
 
 // Pushshift is the configuration for Pushshift.
 type Pushshift struct {
-	URL   string
-	Delay int64
+	URL   string `toml:"url"`
+	Delay int64  `toml:"delay"`
 }
 
-// Redis configuration
-type Redis struct {
-	Addr     string
-	Password string
-	DB       int64
+// RedisConfig configuration
+type RedisConfig struct {
+	Addr     string `toml:"addr"`
+	Password string `toml:"password"`
+	DB       int    `toml:"db"`
 }
 
 // OpenConfig opens the configuration file.

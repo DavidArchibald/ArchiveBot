@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +20,7 @@ type History struct {
 
 // PushshiftData is the structure of the returned pushshift data
 type PushshiftData struct {
-	Data []PushshiftData `json:"data"`
+	Data []PushshiftSubmission `json:"data"`
 }
 
 // PushshiftSubmission is the extracted information from a Pushshift message.
@@ -31,7 +32,7 @@ type PushshiftSubmission struct {
 // PushshiftFields are the extracted fields of pushshift
 type PushshiftFields struct {
 	ID    string `json:"id"`
-	Epoch int64  `json:"epoch"`
+	Epoch int64  `json:"created_utc"`
 }
 
 // UnmarshalJSON from bytes.
@@ -50,9 +51,18 @@ func (s *PushshiftSubmission) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// MarshalJSON into bytes.
+// MarshalJSON turns into a submission into JSON.
 func (s *PushshiftSubmission) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.Raw)
+}
+
+// MarshalBinary turns the json string into raw bytes.
+func (s PushshiftSubmission) MarshalBinary() ([]byte, error) {
+	var b bytes.Buffer
+	if err := json.NewEncoder(&b).Encode(s.Raw); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
 
 // NewHistory constructs a history object from the configuration.
@@ -76,7 +86,7 @@ var ErrInvalidLimit = errors.New("invalid limit")
 func (h *History) ReadAllSubmissions() func() ([]PushshiftSubmission, error) {
 	return func() ([]PushshiftSubmission, error) {
 		submissions, err := h.ReadSubmissionBatch()
-		if err != nil && errors.Is(err, ErrSubmissionsRead) {
+		if err != nil && !errors.Is(err, ErrSubmissionsRead) {
 			return nil, err
 		}
 
@@ -108,8 +118,10 @@ func (h *History) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 		return submissions, err
 	}
 
-	var lastBatch *PushshiftSubmission
-	*lastBatch = *h.last
+	lastBatch := &PushshiftSubmission{}
+	if h.last != nil {
+		*lastBatch = *h.last
+	}
 
 	for i, submission := range submissions {
 		if i == len(submissions) {
@@ -134,6 +146,7 @@ func (h *History) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 	h.last = &lastSubmission
 
 	if lastSubmission.Epoch == lastBatch.Epoch {
+		fmt.Println(lastSubmission.Epoch, "\n", "\n", "\n", lastBatch.Epoch)
 		// If this is reached the page is full of submissions of the same epoch.
 		// This edge case is likely only relevant on low limits as it's unlikely the maximal limit of 500 with result in posts with the same epoch.
 		// Reading is still valid if necessitated so this epoch is skipped.
@@ -166,10 +179,10 @@ func (h *History) readSubmissionBatch() ([]PushshiftSubmission, error) {
 		return nil, err
 	}
 
-	var submissions []PushshiftSubmission
-	if err := json.Unmarshal(b, &submissions); err != nil {
+	var responseJSON PushshiftData
+	if err := json.Unmarshal(b, &responseJSON); err != nil {
 		return nil, err
 	}
 
-	return submissions, nil
+	return responseJSON.Data, nil
 }

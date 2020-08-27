@@ -7,6 +7,6 @@ name = "<string>"
 search_limit = <integer>
 
 [Redis]
-Addr = "<string>"
-Password = "<string>"
-DB = <integer>
+addr = "<string>"
+password = "<string>"
+db = <integer>
