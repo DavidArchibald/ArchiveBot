@@ -1,12 +1,22 @@
+[Application]
+production = <bool> # In development any unexpected error will halt the application, logging is formatted, and everything is logged.
+
 [Pushshift]
-url = "<string>"
-delay = <integer>
+url = "<string>"                  # e.g. https://api.pushshift.io/reddit/submission/search/
+delay = <integer>                 # Delay between requests in seconds
+
+[Reddit]
+username = "<string>"             # Account username
+password = "<string>"             # Account password
+user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.1.2 (by /u/LukeAbby)
+url = "<string>"                  # Reddit API URL, e.g. http://api.reddit.com/
+search_limit = <integer>          # The limit on the number of comments
 
 [Subreddit]
-name = "<string>"
-search_limit = <integer>
+name = "<string>"                 # Subreddit Name
+search_limit = <integer>          # Limit on searching
 
 [Redis]
-addr = "<string>"
-password = "<string>"
-db = <integer>
+addr = "<string>"                 # Database Address
+password = "<string>"             # Database Password
+db = <integer>                    # Database Index

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -9,32 +10,48 @@ import (
 // Redis is a client of redis information
 type Redis struct {
 	*redis.Client
-	Config *Config
+	config RedisConfig
 }
 
 var ctx = context.Background()
 
 // NewRedisClient creates a new Redis client.
-func NewRedisClient(config *Config) (*Redis, error) {
+func NewRedisClient(config RedisConfig) (*Redis, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     config.Redis.Addr,
-		Password: config.Redis.Password,
-		DB:       config.Redis.DB,
+		Addr:     config.Addr,
+		Password: config.Password,
+		DB:       config.DB,
 	})
 
-	_, err := rdb.Ping(ctx).Result()
-	if err != nil {
+	if err := rdb.Ping(ctx).Err(); err != nil {
 		return nil, err
 	}
 
 	return &Redis{rdb, config}, nil
 }
 
-func (r *Redis) addSubmissions(submissions []PushshiftSubmission) error {
-	var arguments []interface{}
+func (c *Client) addSubmissions(submissions []PushshiftSubmission) error {
+	var keyValues []interface{}
+	var titles []interface{}
+	var upvotes []interface{}
 	for _, submission := range submissions {
-		arguments = append(arguments, "submission:"+submission.ID, submission)
+		keyValues = append(keyValues, "submission:"+submission.ID, submission)
+		titles = append(titles, submission.ID+":"+submission.Title)
+		upvotes = append(upvotes, fmt.Sprintf("%s:%d", submission.ID, submission.Upvotes))
 	}
-	_, err := r.MSet(ctx, arguments...).Result()
-	return err
+
+	r := c.Redis
+	if err := r.MSet(ctx, keyValues...).Err(); err != nil {
+		return fmt.Errorf("could not set submissions: %w", err)
+	}
+
+	if err := r.SAdd(ctx, "titles", titles...).Err(); err != nil {
+		return fmt.Errorf("could not add submission title: %w", err)
+	}
+
+	if err := r.SAdd(ctx, "upvotes", upvotes...).Err(); err != nil {
+		return fmt.Errorf("could not add submission upvotes %w", err)
+	}
+
+	return nil
 }

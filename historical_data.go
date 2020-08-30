@@ -13,9 +13,8 @@ import (
 
 // History is a structure to traverse the history of a subreddit's submissions.
 type History struct {
-	config *Config
-	last   *PushshiftSubmission
-	done   bool
+	last *PushshiftSubmission
+	done bool
 }
 
 // PushshiftData is the structure of the returned pushshift data
@@ -31,20 +30,26 @@ type PushshiftSubmission struct {
 
 // PushshiftFields are the extracted fields of pushshift
 type PushshiftFields struct {
-	ID    string `json:"id"`
-	Epoch int64  `json:"created_utc"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Upvotes int    `json:"ups"`
+	Epoch   int64  `json:"created_utc"`
 }
 
 // UnmarshalJSON from bytes.
 func (s *PushshiftSubmission) UnmarshalJSON(b []byte) error {
 	var fields PushshiftFields
 	if err := json.Unmarshal(b, &fields); err != nil {
-		return err
+		return NewContextError(err, []ContextParam{
+			{"responseData", fmt.Sprintf(`"%s"`, b)},
+		})
 	}
 
 	var raw map[string]interface{}
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
+		return NewContextError(err, []ContextParam{
+			{"responseData", fmt.Sprintf(`"%s"`, b)},
+		})
 	}
 
 	*s = PushshiftSubmission{fields, raw}
@@ -67,7 +72,7 @@ func (s PushshiftSubmission) MarshalBinary() ([]byte, error) {
 
 // NewHistory constructs a history object from the configuration.
 func NewHistory(config *Config) *History {
-	return &History{config: config}
+	return &History{}
 }
 
 // ErrSubmissionsRead is returned with ReadSubmissions has finished reading all submissions.
@@ -83,18 +88,20 @@ var ErrMaySkipSubmissions = errors.New("submissions may be skipped")
 var ErrInvalidLimit = errors.New("invalid limit")
 
 // ReadAllSubmissions gets every submission with an appropriate delay between.
-func (h *History) ReadAllSubmissions() func() ([]PushshiftSubmission, error) {
+func (c *Client) ReadAllSubmissions() func() ([]PushshiftSubmission, error) {
 	return func() ([]PushshiftSubmission, error) {
-		submissions, err := h.ReadSubmissionBatch()
+		history := c.History
+		config := c.Config
+		submissions, err := c.ReadSubmissionBatch()
 		if err != nil && !errors.Is(err, ErrSubmissionsRead) {
 			return nil, err
 		}
 
-		if h.done && submissions == nil {
+		if history.done && submissions == nil {
 			return nil, nil
 		}
 
-		time.Sleep(time.Duration(h.config.Pushshift.Delay))
+		time.Sleep(time.Duration(config.Pushshift.Delay))
 
 		return submissions, nil
 	}
@@ -104,23 +111,27 @@ func (h *History) ReadAllSubmissions() func() ([]PushshiftSubmission, error) {
 // ReadSubmissionBatch will panic if given a limit less than 2. There is no known downside to putting the limit to the current maximum of 500, the minimum suggested is 10.
 // The length returned will be less than or equal to the limit, usually about the limit - 1 after the first request. This is to prevent submissions being skipped.
 // If the error is the sentinel error ErrSubmissionsRead, any submissions are still valid. Otherwise if a submission is returned with an error, it is unintended behavior.
-func (h *History) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
-	if h.config.Subreddit.Limit <= 2 {
-		panic(fmt.Errorf("expected limit to be at least 2: %w", ErrInvalidLimit))
+func (c *Client) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
+	history := c.History
+	config := c.Config
+	if config.Subreddit.Limit <= 2 {
+		c.Logger.DPanic(
+			fmt.Errorf("expected limit to be at least 2, %w", ErrInvalidLimit),
+		)
 	}
 
-	if h.done {
+	if history.done {
 		return nil, ErrSubmissionsRead
 	}
 
-	submissions, err := h.readSubmissionBatch()
+	submissions, err := c.readSubmissionBatch()
 	if err != nil {
 		return submissions, err
 	}
 
 	lastBatch := &PushshiftSubmission{}
-	if h.last != nil {
-		*lastBatch = *h.last
+	if history.last != nil {
+		*lastBatch = *history.last
 	}
 
 	for i, submission := range submissions {
@@ -134,32 +145,35 @@ func (h *History) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 		}
 	}
 
-	// When reading is done none, will be returned or only the submission as the search is made inclusive.
-	if len(submissions) == 0 {
-		h.last = nil
-		h.done = true
-		return nil, ErrSubmissionsRead
+	// When reading is done, none will be returned or only the submission as the search is made inclusive.
+	if len(submissions) == 0 || (len(submissions) == 1 && submissions[0].ID == lastBatch.ID) {
+		history.last = nil
+		history.done = true
+
+		return nil, NewContextlessError(ErrSubmissionsRead).Wrap("all submissions read")
 	}
 
 	lastIndex := len(submissions) - 1
 	lastSubmission := submissions[lastIndex]
-	h.last = &lastSubmission
+	history.last = &lastSubmission
 
 	if lastSubmission.Epoch == lastBatch.Epoch {
-		fmt.Println(lastSubmission.Epoch, "\n", "\n", "\n", lastBatch.Epoch)
 		// If this is reached the page is full of submissions of the same epoch.
 		// This edge case is likely only relevant on low limits as it's unlikely the maximal limit of 500 with result in posts with the same epoch.
 		// Reading is still valid if necessitated so this epoch is skipped.
-		h.last.Epoch++
+		history.last.Epoch++
 
-		return submissions, fmt.Errorf("request returned all same epoch: %w", ErrMaySkipSubmissions)
+		return submissions, NewWrappedError("request returned all same epoch", ErrMaySkipSubmissions, []ContextParam{
+			{"epoch", fmt.Sprint(lastSubmission.Epoch)},
+		})
 	}
 
 	return submissions, nil
 }
 
-func (h *History) readSubmissionBatch() ([]PushshiftSubmission, error) {
-	config := h.config
+func (c *Client) readSubmissionBatch() ([]PushshiftSubmission, error) {
+	h := c.History
+	config := c.Config
 	name := url.QueryEscape(config.Subreddit.Name)
 
 	requestURL := fmt.Sprintf("%s?subreddit=%s&limit=%d", config.Pushshift.URL, name, config.Subreddit.Limit)
@@ -171,17 +185,32 @@ func (h *History) readSubmissionBatch() ([]PushshiftSubmission, error) {
 
 	resp, err := http.Get(requestURL)
 	if err != nil {
-		return nil, err
+		return nil, NewContextError(err, []ContextParam{
+			{"requestURL", requestURL},
+		})
 	}
 
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, NewContextError(err, []ContextParam{
+			{"requestURL", requestURL},
+			{"response", fmt.Sprint(resp)},
+		})
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, NewContextError(err, []ContextParam{
+			{"requestURL", requestURL},
+			{"responseData", fmt.Sprintf(`"%s"`, b)},
+		})
 	}
 
 	var responseJSON PushshiftData
 	if err := json.Unmarshal(b, &responseJSON); err != nil {
-		return nil, err
+		return nil, NewContextError(err, []ContextParam{
+			{"requestURL", requestURL},
+			{"responseData", fmt.Sprintf(`"%s"`, b)},
+		})
 	}
 
 	return responseJSON.Data, nil
