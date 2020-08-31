@@ -1,19 +1,24 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"time"
 
+	"github.com/go-redis/redis"
+	"github.com/jzelinskie/geddit"
 	"go.uber.org/zap"
 )
 
 // Client is the encapsulation of the relevant clients used.
 type Client struct {
 	*Flags
-	Logger  *zap.SugaredLogger
-	Config  *Config
-	Redis   *Redis
-	Reddit  *Reddit
-	History *History
+	Logger    *zap.SugaredLogger
+	Config    *Config
+	Redis     *Redis
+	Reddit    *Reddit
+	History   *History
+	waitClose chan struct{}
 }
 
 // Flags are the application flags, sourced from Config.Application, hoisted for convenience.
@@ -47,13 +52,22 @@ func NewClient(configPath string) *Client {
 
 	history := NewHistory(config)
 
-	return &Client{flags, logger, config, rdb, reddit, history}
+	waitClose := make(chan struct{}, 1)
+
+	return &Client{flags, logger, config, rdb, reddit, history, waitClose}
 }
 
 // Close the client's functions.
 func (c *Client) Close() {
 	c.Redis.Close()
 	c.Logger.Sync()
+	c.waitClose <- struct{}{}
+}
+
+// WaitClose is used to wait until the client closes.
+func (c *Client) WaitClose() {
+	<-c.waitClose
+	close(c.waitClose)
 }
 
 func main() {
@@ -74,10 +88,10 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 		submissions, err := nextSubmissions()
 		if err != nil {
 			client.dfatal(err)
-			continue
+			break
 		}
 
-		if submissions == nil {
+		if len(submissions) == 0 {
 			break
 		}
 

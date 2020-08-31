@@ -69,12 +69,22 @@ func (c *Client) log(err error) {
 
 // fatal is equivalent to log() followed by os.Exit(1)
 func (c *Client) fatal(err error) {
+	if ce, ok := err.(*ContextError); ok {
+		err = ce.Wrap("PANIC")
+	} else {
+		err = fmt.Errorf("PANIC: %w", err)
+	}
 	c.log(err)
 	os.Exit(1)
 }
 
 // dfatal is fatal except it only exits in development mode.
 func (c *Client) dfatal(err error) {
+	if ce, ok := err.(*ContextError); ok {
+		err = ce.Wrap("DEVELOPMENT PANIC")
+	} else {
+		err = fmt.Errorf("DEVELOPMENT PANIC: %w", err)
+	}
 	c.log(err)
 	if !c.IsProduction {
 		os.Exit(1)

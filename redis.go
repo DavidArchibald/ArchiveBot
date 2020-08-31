@@ -33,11 +33,11 @@ func NewRedisClient(config RedisConfig) (*Redis, error) {
 func (c *Client) addSubmissions(submissions []PushshiftSubmission) error {
 	var keyValues []interface{}
 	var titles []interface{}
-	var upvotes []interface{}
+	var upvotes []*redis.Z
 	for _, submission := range submissions {
 		keyValues = append(keyValues, "submission:"+submission.ID, submission)
 		titles = append(titles, submission.ID+":"+submission.Title)
-		upvotes = append(upvotes, fmt.Sprintf("%s:%d", submission.ID, submission.Upvotes))
+		upvotes = append(upvotes, &redis.Z{Member: submission.ID, Score: float64(submission.Upvotes)})
 	}
 
 	r := c.Redis
@@ -49,7 +49,7 @@ func (c *Client) addSubmissions(submissions []PushshiftSubmission) error {
 		return fmt.Errorf("could not add submission title: %w", err)
 	}
 
-	if err := r.SAdd(ctx, "upvotes", upvotes...).Err(); err != nil {
+	if err := r.ZAdd(ctx, "upvotes", upvotes...).Err(); err != nil {
 		return fmt.Errorf("could not add submission upvotes %w", err)
 	}
 

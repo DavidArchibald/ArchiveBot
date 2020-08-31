@@ -1,5 +1,5 @@
 [Application]
-production = <bool> # In development any unexpected error will halt the application, logging is formatted, and everything is logged.
+production = <bool>               # In development any unexpected error will halt the application, logging is formatted, and everything is logged.
 
 [Pushshift]
 url = "<string>"                  # e.g. https://api.pushshift.io/reddit/submission/search/

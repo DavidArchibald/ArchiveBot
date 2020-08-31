@@ -9,7 +9,7 @@ type RedditConfig struct {
 	Username    string `toml:"username"`
 	Password    string `toml:"password"`
 	UserAgent   string `toml:"user_agent"`
-	SearchLimit int64  `toml:"search_limit"`
+	SearchLimit int    `toml:"search_limit"`
 	URL         string `toml:"url"`
 }
 
