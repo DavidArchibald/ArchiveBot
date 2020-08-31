@@ -93,9 +93,10 @@ func (c *Client) dfatal(err error) {
 
 // ContextError is an error with additional debugging context.
 type ContextError struct {
-	context []ContextParam
-	history []ContextError
-	err     error
+	context     []ContextParam
+	contextKeys map[string]struct{}
+	history     []ContextError
+	err         error
 }
 
 // ContextParam is a contextual parameter.
@@ -108,7 +109,7 @@ var _ error = &ContextError{}
 
 // NewContextlessError creates a ContextError with no context. This is essentially a no-op.
 func NewContextlessError(err error) *ContextError {
-	return &ContextError{[]ContextParam{}, nil, err}
+	return &ContextError{[]ContextParam{}, make(map[string]struct{}), nil, err}
 }
 
 // NewWrappedError wraps the error and then adds context.
@@ -123,12 +124,31 @@ func NewWrappedError(wrap string, err error, context []ContextParam) *ContextErr
 func NewContextError(err error, context []ContextParam) *ContextError {
 	if ce, ok := err.(*ContextError); ok {
 		if ce == nil {
-			return &ContextError{context, nil, err}
+			return &ContextError{context, make(map[string]struct{}), nil, err}
 		}
 
 		temp := *ce
 		for _, param := range context {
+			if _, ok := ce.contextKeys[param.key]; ok {
+				isSet := false
+				// Replace an existing instance of context if one exists. Remove extras.
+				for i, contextParam := range ce.context {
+					if contextParam.key == param.key {
+						if !isSet {
+							temp.context[i] = param
+						} else {
+							temp.context = append(temp.context[:i], temp.context[i+1:]...)
+						}
+					}
+				}
+
+				if isSet {
+					continue
+				}
+			}
+
 			temp.context = append(temp.context, param)
+			temp.contextKeys[param.key] = struct{}{}
 		}
 
 		temp.history = nil
@@ -136,12 +156,19 @@ func NewContextError(err error, context []ContextParam) *ContextError {
 
 		return &temp
 	}
-	return &ContextError{context, nil, err}
+
+	contextKeys := make(map[string]struct{})
+	for _, param := range context {
+		contextKeys[param.key] = struct{}{}
+	}
+
+	return &ContextError{context, contextKeys, nil, err}
 }
 
 // AddContext to an error.
 func (ce *ContextError) AddContext(key, value string) *ContextError {
 	ce.context = append(ce.context, ContextParam{key, value})
+	ce.contextKeys[key] = struct{}{}
 	return ce
 }
 
@@ -154,6 +181,23 @@ func (ce *ContextError) GetContext(key string) string {
 	}
 
 	return ""
+}
+
+// RemoveContext removes a contextual value.
+func (ce *ContextError) RemoveContext(key string) *ContextError {
+	if _, ok := ce.contextKeys[key]; !ok {
+		return ce
+	}
+
+	for i, v := range ce.context {
+		if v.key == key {
+			ce.context = append(ce.context[:i], ce.context[i+1:]...)
+		}
+	}
+
+	delete(ce.contextKeys, key)
+
+	return ce
 }
 
 // Wrap this error, returning itself for chaining.
