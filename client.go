@@ -1,12 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"time"
 
-	"github.com/go-redis/redis"
-	"github.com/jzelinskie/geddit"
 	"go.uber.org/zap"
 )
 
@@ -68,47 +64,4 @@ func (c *Client) Close() {
 func (c *Client) WaitClose() {
 	<-c.waitClose
 	close(c.waitClose)
-}
-
-func main() {
-	client := NewClient("config.toml")
-	defer client.Close()
-
-	nextSubmissions := client.ReadAllSubmissions()
-	readSubmissions(client, nextSubmissions)
-
-	if err := client.AnalyzeSubmissions(); err != nil {
-		client.fatal(err)
-	}
-	
-	client.WaitClose()
-}
-
-func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmission, error)) {
-	submissionsCount := 0
-	for {
-		submissions, err := nextSubmissions()
-		if err != nil {
-			client.dfatal(err)
-			break
-		}
-
-		if len(submissions) == 0 {
-			break
-		}
-
-		if err := client.addSubmissions(submissions); err != nil {
-			client.Logger.Error(err)
-		}
-
-		addedSubmissions := len(submissions)
-		submissionsCount += addedSubmissions
-
-		firstSubmission := submissions[0]
-		lastSubmission := submissions[addedSubmissions-1]
-
-		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %d) to %s (epoch: %d).", addedSubmissions, firstSubmission.ID, firstSubmission.Epoch, lastSubmission.ID, lastSubmission.Epoch)
-	}
-
-	client.Logger.Infof("Added %d Pushshift submissions.", submissionsCount)
 }
