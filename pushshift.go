@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"net/url"
 	"time"
 )
 
-// History is a structure to traverse the history of a subreddit's submissions.
-type History struct {
+// PushshiftSearch is a structure to traverse history through Pushshift.
+type PushshiftSearch struct {
 	last *PushshiftSubmission
 	done bool
+}
+
+// NewPushshiftSearch constructs a search .
+func NewPushshiftSearch(config *Config) *PushshiftSearch {
+	return &PushshiftSearch{}
 }
 
 // PushshiftData is the structure of the returned pushshift data
@@ -28,12 +31,13 @@ type PushshiftSubmission struct {
 	Raw map[string]interface{}
 }
 
-// PushshiftFields are the extracted fields of pushshift
+// PushshiftFields are the extracted fields of a submission.
+// geddit.Submission is not necessarily guaranteed to match and so is not used.
 type PushshiftFields struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Upvotes int    `json:"ups"`
-	Epoch   int64  `json:"created_utc"`
+	ID      string  `json:"id"`
+	Title   string  `json:"title"`
+	Upvotes int     `json:"ups"`
+	Epoch   float64 `json:"created_utc"`
 }
 
 // UnmarshalJSON from bytes.
@@ -61,18 +65,13 @@ func (s *PushshiftSubmission) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.Raw)
 }
 
-// MarshalBinary turns the json string into raw bytes.
+// MarshalBinary turns the JSON string into raw bytes.
 func (s PushshiftSubmission) MarshalBinary() ([]byte, error) {
 	var b bytes.Buffer
 	if err := json.NewEncoder(&b).Encode(s.Raw); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil
-}
-
-// NewHistory constructs a history object from the configuration.
-func NewHistory(config *Config) *History {
-	return &History{}
 }
 
 // ErrSubmissionsRead is returned with ReadSubmissions has finished reading all submissions.
@@ -87,10 +86,10 @@ var ErrMaySkipSubmissions = errors.New("submissions may be skipped")
 // ErrInvalidLimit occurs when the limit is invalid.
 var ErrInvalidLimit = errors.New("invalid limit")
 
-// ReadAllSubmissions gets every submission with an appropriate delay between.
-func (c *Client) ReadAllSubmissions() func() ([]PushshiftSubmission, error) {
+// ReadPushshiftSubmissions gets every submission with an appropriate delay between.
+func (c *Client) ReadPushshiftSubmissions() func() ([]PushshiftSubmission, error) {
 	return func() ([]PushshiftSubmission, error) {
-		history := c.History
+		history := c.PushshiftSearch
 		config := c.Config
 		submissions, err := c.ReadSubmissionBatch()
 		if err != nil && !errors.Is(err, ErrSubmissionsRead) {
@@ -112,7 +111,7 @@ func (c *Client) ReadAllSubmissions() func() ([]PushshiftSubmission, error) {
 // The length returned will be less than or equal to the limit, usually about the limit - 1 after the first request. This is to prevent submissions being skipped.
 // If the error is the sentinel error ErrSubmissionsRead, any submissions are still valid. Otherwise if a submission is returned with an error, it is unintended behavior.
 func (c *Client) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
-	history := c.History
+	history := c.PushshiftSearch
 	config := c.Config
 	if config.Subreddit.Limit <= 2 {
 		c.Logger.DPanic(
@@ -172,37 +171,20 @@ func (c *Client) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 }
 
 func (c *Client) readSubmissionBatch() ([]PushshiftSubmission, error) {
-	h := c.History
+	h := c.PushshiftSearch
 	config := c.Config
 	name := url.QueryEscape(config.Subreddit.Name)
 
 	requestURL := fmt.Sprintf("%s?subreddit=%s&limit=%d", config.Pushshift.URL, name, config.Subreddit.Limit)
 
 	if h.last != nil {
-		// Makes the request include the last recorded epoch, for the edge case of the last request ending with an epoch in which there are still more comments of the same epoch right after, outside the request limit.
-		requestURL += fmt.Sprintf("&before=%d", h.last.Epoch+1)
+		// Makes the request include the last recorded epoch, for the edge case of the last request ending with an epoch in which there are still more comments of the same epoch right after, outside the search limit.
+		requestURL += fmt.Sprintf("&before=%d", int64(h.last.Epoch)+1)
 	}
 
-	resp, err := http.Get(requestURL)
-	if err != nil {
-		return nil, NewContextError(err, []ContextParam{
-			{"requestURL", requestURL},
-		})
-	}
-
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, NewContextError(err, []ContextParam{
-			{"requestURL", requestURL},
-			{"response", fmt.Sprint(resp)},
-		})
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, NewContextError(err, []ContextParam{
-			{"requestURL", requestURL},
-			{"responseData", fmt.Sprintf(`"%s"`, b)},
-		})
+	b, ce := c.doRequest("GET", requestURL, nil, nil)
+	if ce != nil {
+		return nil, ce.Wrap("reading failed")
 	}
 
 	var responseJSON PushshiftData

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"time"
 
 	"github.com/pelletier/go-toml"
 )
@@ -19,7 +20,9 @@ type Config struct {
 
 // Application is
 type Application struct {
-	IsProduction bool `toml:"is_production"`
+	IsProduction bool          `toml:"is_production"`
+	LoopDelay    time.Duration `toml:"loop_delay"`
+	TickSpeed    time.Duration `toml:"tick_speed"`
 }
 
 // Subreddit is the configuration for a subreddit.

@@ -70,20 +70,22 @@ func (c *Client) log(err error) {
 // fatal is equivalent to log() followed by os.Exit(1)
 func (c *Client) fatal(err error) {
 	if ce, ok := err.(*ContextError); ok {
-		err = ce.Wrap("PANIC")
+		err = ce.Wrap("FATAL")
 	} else {
-		err = fmt.Errorf("PANIC: %w", err)
+		err = fmt.Errorf("FATAL: %w", err)
 	}
 	c.log(err)
 	os.Exit(1)
 }
 
 // dfatal is fatal except it only exits in development mode.
+// This is used more often that might be expected as to keep the processes running.
+// Secondly, because there are many APIs that don't always behave consistently, issues may crop up without programmer error.
 func (c *Client) dfatal(err error) {
 	if ce, ok := err.(*ContextError); ok {
-		err = ce.Wrap("DEVELOPMENT PANIC")
+		err = ce.Wrap("DEVELOPMENT FATAL")
 	} else {
-		err = fmt.Errorf("DEVELOPMENT PANIC: %w", err)
+		err = fmt.Errorf("DEVELOPMENT FATAL: %w", err)
 	}
 	c.log(err)
 	if !c.IsProduction {
@@ -233,6 +235,12 @@ func (ce *ContextError) UnwrapContext() *ContextError {
 	}
 
 	return nil
+}
+
+// Panic a contextual error.
+func (ce *ContextError) Panic(logger *zap.SugaredLogger) {
+	ce.LogError(logger)
+	panic(ce.err)
 }
 
 // LogError a contextual error.

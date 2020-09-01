@@ -1,5 +1,7 @@
 [Application]
 production = <bool>               # In development any unexpected error will halt the application, logging is formatted, and everything is logged.
+loop_delay = "<duration>"         # The delay between iterations of each loop. Must be a positive, parseable duration, see https://golang.org/pkg/time/#ParseDuration.
+tick_speed = "<duration>"         # The speed at which the client updates its state. Should be small enough to react quickly and less than loop_delay.
 
 [Pushshift]
 url = "<string>"                  # e.g. https://api.pushshift.io/reddit/submission/search/
@@ -8,7 +10,7 @@ delay = <integer>                 # Delay between requests in seconds
 [Reddit]
 username = "<string>"             # Account username
 password = "<string>"             # Account password
-user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.1.2 (by /u/LukeAbby)
+user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.1.4 (by /u/LukeAbby)
 url = "<string>"                  # Reddit API URL, e.g. http://api.reddit.com/
 search_limit = <integer>          # The limit on the number of comments
 
