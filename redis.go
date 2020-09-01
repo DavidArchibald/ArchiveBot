@@ -42,6 +42,9 @@ const RedisPushshiftEnd = "pushshiftEndEpoch"
 // RedisPushshiftTraversed is a boolean value for whether to check after RedisPushshiftEnd.
 const RedisPushshiftTraversed = "pushshiftTraversed"
 
+// RedisSearchIsForwards represents a boolean value for whether to traverse the current anchor forwards or backwards.
+const RedisSearchIsForwards = "searchForwards"
+
 // Redis is a client of redis information
 type Redis struct {
 	*redis.Client
@@ -120,6 +123,33 @@ func (c *Client) updateVotes(submissions []*geddit.Submission) *ContextError {
 		return NewWrappedError("could not update submission upvotes", err, []ContextParam{
 			{"updates", fmt.Sprint(updates)},
 		})
+	}
+
+	return nil
+}
+
+func (c *Client) setAnchor(anchorKey string, fullID string, epoch float64) *ContextError {
+	anchorString := fmt.Sprintf("%s:%f", fullID, epoch)
+
+	c.Logger.Infof("Setting %s to %s.", anchorKey, anchorString)
+
+	if err := c.Redis.Set(ctx, anchorKey, anchorString, 0).Err(); err != nil {
+		c.dfatal(NewContextError(fmt.Errorf("could not set %s: %w", anchorKey, err), []ContextParam{
+			{"Anchor String", anchorString},
+		}))
+	}
+
+	return nil
+}
+
+func (c *Client) setCurrentAnchor(anchorKey string, fullID string, epoch float64, isForwards bool) *ContextError {
+	err := c.setAnchor(anchorKey, fullID, epoch)
+	if err != nil {
+		return err
+	}
+
+	if err := c.Redis.Set(ctx, RedisSearchIsForwards, isForwards, 0).Err(); err != nil {
+		c.dfatal(NewContextlessError(fmt.Errorf("could not set %s: %w", RedisSearchIsForwards, err)))
 	}
 
 	return nil

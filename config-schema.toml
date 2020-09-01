@@ -10,7 +10,7 @@ delay = <integer>                 # Delay between requests in seconds
 [Reddit]
 username = "<string>"             # Account username
 password = "<string>"             # Account password
-user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.1.4 (by /u/LukeAbby)
+user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.1.5 (by /u/LukeAbby)
 url = "<string>"                  # Reddit API URL, e.g. http://api.reddit.com/
 search_limit = <integer>          # The limit on the number of comments
 

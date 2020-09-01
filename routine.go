@@ -104,34 +104,25 @@ func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit
 		}
 	}
 
-	var anchors []interface{}
 	if isForwards {
 		lastSubmission := submissions[len(submissions)-1]
-		endAnchor := lastSubmission.FullID + RedisDelimiter + fmt.Sprintf("%f", lastSubmission.DateCreated)
-
-		anchors = []interface{}{
-			RedisAnchorEnd, endAnchor,
+		if lastSubmission.DateCreated < c.Search.End.Epoch {
+			if ce := c.setAnchor(RedisAnchorEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
+				c.dfatal(ce)
+			}
 		}
-
-		c.Logger.Infof("Setting End Anchor to %s.", endAnchor)
 	} else {
-		startAnchor := fmt.Sprintf("%s:%f", submissions[0].FullID, submissions[0].DateCreated)
-		anchors = []interface{}{
-			RedisAnchorStart, startAnchor,
+		firstSubmission := submissions[0]
+		if firstSubmission.DateCreated > c.Search.Start.Epoch {
+			if ce := c.setAnchor(RedisAnchorStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
+				c.dfatal(ce)
+			}
 		}
-
-		c.Logger.Infof("Setting Start Anchor to %s.", startAnchor)
 	}
 
 	lastSubmission := submissions[len(submissions)-1]
-	currentAnchor := fmt.Sprintf("%s:%f", lastSubmission.FullID, lastSubmission.DateCreated)
-	anchors = append(anchors, RedisAnchorCurrent, currentAnchor)
-	c.Logger.Infof("Setting Current Anchor to %s.",  currentAnchor)
-
-	if err := c.Redis.MSet(ctx, anchors...).Err(); err != nil {
-		c.dfatal(NewContextError(fmt.Errorf("could not set anchor(s): %w", err), []ContextParam{
-			{"Anchor Update", fmt.Sprint(anchors)},
-		}))
+	if ce := c.setCurrentAnchor(RedisAnchorContext, lastSubmission.FullID, lastSubmission.DateCreated, isForwards); ce != nil {
+		c.dfatal(ce)
 	}
 
 	return submissions, nil
