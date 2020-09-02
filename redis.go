@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/jzelinskie/geddit"
@@ -30,11 +29,20 @@ const RedisUpvotes = "upvotes"
 // RedisDelimiter is the delimiter for fields.
 const RedisDelimiter = ":"
 
-// RedisSubmissionPrefix is the prefix for a submission.
-const RedisSubmissionPrefix = "submissions"
+// RedisSearchPrefix is the prefix for a search term.
+const RedisSearchPrefix = "search" + RedisDelimiter
 
-// RedisTitles is a hash with keys of submissionID to title.
+// RedisFlairsPrefix is a hash with keys of submission full names to their flair.
+const RedisFlairsPrefix = "flairs" + RedisDelimiter
+
+// RedisSubmissions is a hash with keys of submission full names to their JSON data.
+const RedisSubmissions = "submissions"
+
+// RedisTitles is a hash with keys of submission full names to their title.
 const RedisTitles = "titles"
+
+// RedisPermalinks is a hash with keys of submission full names to their permalink.
+const RedisPermalinks = "permalinks"
 
 // RedisPushshiftStart is the epoch of the first scanned Pushshift data.
 const RedisPushshiftStart = "pushshiftStartEpoch"
@@ -71,18 +79,28 @@ func NewRedisClient(config RedisConfig) (*Redis, error) {
 	return &Redis{rdb, config}, nil
 }
 
-func (c *Client) addSubmissions(submissions []PushshiftSubmission) error {
-	var submissionMaps []interface{}
+func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) error {
+	var submissions []interface{}
 	var titles []interface{}
 	var upvotes []*redis.Z
-	for _, submission := range submissions {
-		submissionMaps = append(submissionMaps, RedisSubmissionPrefix+submission.FullID, submission)
+	flairs := make(map[string][]*redis.Z)
+	searches := make(map[string][]*redis.Z)
+	for _, submission := range pushshiftSubmissions {
+		submissions = append(submissions, submission.FullID, submission)
 		titles = append(titles, submission.FullID, submission.Title)
+
 		upvotes = append(upvotes, &redis.Z{Member: submission.FullID, Score: float64(submission.Ups)})
+
+		flairs[submission.LinkFlairText] = append(flairs[submission.LinkFlairText], &redis.Z{Member: submission.FullID, Score: submission.DateCreated})
+
+		matches := c.getTitleMatches(submission.Title)
+		for _, match := range matches {
+			searches[match] = append(searches[match], &redis.Z{Score: submission.DateCreated, Member: submission.FullID})
+		}
 	}
 
 	r := c.Redis
-	if err := r.MSet(ctx, submissionMaps...).Err(); err != nil {
+	if err := r.HSet(ctx, RedisSubmissions, submissions...).Err(); err != nil {
 		return fmt.Errorf("could not set submissions: %w", err)
 	}
 
@@ -91,26 +109,32 @@ func (c *Client) addSubmissions(submissions []PushshiftSubmission) error {
 	}
 
 	if err := r.ZAdd(ctx, RedisUpvotes, upvotes...).Err(); err != nil {
-		return fmt.Errorf("could not add submission upvotes %w", err)
+		return fmt.Errorf("could not add submission upvotes: %w", err)
+	}
+
+	for flairName, flairs := range flairs {
+		if err := r.ZAdd(ctx, RedisFlairsPrefix+flairName, flairs...).Err(); err != nil {
+			return fmt.Errorf("could not add flairs for %s: %w", flairName, err)
+		}
+	}
+
+	for searchName, search := range searches {
+		if err := r.ZAdd(ctx, RedisSearchPrefix+searchName, search...).Err(); err != nil {
+			return fmt.Errorf("could not add search term %s: %w", searchName, err)
+		}
 	}
 
 	return nil
 }
 
-func (c *Client) getRedisSubmissions() (map[string]struct{}, *ContextError) {
+func (c *Client) getHashMap(key string) (map[string]string, *ContextError) {
 	rdb := c.Redis
-	submissionPrefix := RedisSubmissionPrefix + RedisDelimiter
-	iter := rdb.Scan(ctx, 0, submissionPrefix+"*", 0).Iterator()
+	submissions, err := rdb.HGetAll(ctx, key).Result()
 
-	submissions := make(map[string]struct{})
-	for iter.Next(ctx) {
-		id := strings.TrimLeft(iter.Val(), submissionPrefix)
-		submissions[id] = struct{}{}
+	if err != nil {
+		return nil, NewWrappedError(fmt.Sprintf("error in reading %s", key), err, nil)
 	}
 
-	if err := iter.Err(); err != nil {
-		return nil, NewWrappedError("error in reading Redis submissions", err, nil)
-	}
 	return submissions, nil
 }
 

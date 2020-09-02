@@ -19,7 +19,7 @@ import (
 // AnalyzeSubmissions analyzes Reddit submissions.
 // The parameters Before, After, and Count params are handled in AnalyzeSubmissions.
 func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *ContextError {
-	submissions, err := c.getRedisSubmissions()
+	submissions, err := c.getHashMap(RedisSubmissions)
 	if err != nil {
 		if !c.IsProduction {
 			return err
@@ -58,12 +58,12 @@ func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *Context
 	return nil
 }
 
-func (c *Client) analyzeRedditSubmissions(submissionsSet map[string]struct{}, params geddit.ListingOptions) (map[string]struct{}, *ContextError) {
+func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, params geddit.ListingOptions) (map[string]string, *ContextError) {
 	totalSubmissions := 0
 	for {
 		r, err := c.getSubmissions(params)
 		if err != nil {
-			return submissionsSet, err
+			return submissionsMap, err
 		}
 
 		submissions := r.Submissions
@@ -75,7 +75,7 @@ func (c *Client) analyzeRedditSubmissions(submissionsSet map[string]struct{}, pa
 		}
 
 		for _, submission := range submissions {
-			delete(submissionsSet, submission.ID)
+			delete(submissionsMap, submission.ID)
 		}
 
 		if ce := c.updateVotes(submissions); ce != nil {
@@ -91,7 +91,7 @@ func (c *Client) analyzeRedditSubmissions(submissionsSet map[string]struct{}, pa
 
 	c.Logger.Infof("Read %d submissions.", totalSubmissions)
 
-	return submissionsSet, nil
+	return submissionsMap, nil
 }
 
 func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit.Submission, error) {
@@ -134,7 +134,7 @@ func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit
 
 func (c *Client) getSubmission(id string) (*geddit.Submission, *ContextError) {
 	c.Logger.Infof("Processing submission %s", id)
-	apiURL := c.makePath(RedditRouteComments, id+RedditJSONSuffix)
+	apiURL := c.makePath(RedditRouteComments, id+RedditJSONSuffix+"?raw_json=1")
 
 	b, err := c.doRedditGetRequest(apiURL)
 	if err != nil {

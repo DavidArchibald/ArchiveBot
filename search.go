@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 // Search store information about the range of discovered information.
@@ -16,7 +17,16 @@ type Search struct {
 	End          *Anchor       // The newest locked submission; statistics for posts will not update past this anchor.
 	HasTraversed bool          // Whether the entire history been traversed. If not, submissions after the end anchor will be analyzed.
 	LockTime     time.Duration // The amount of time a submission has until it is locked. Currently 60 days.
-	MaxRequests  int           // The max requests a search iteration can have.
+}
+
+// ConstantsConfig is the search data.
+type ConstantsConfig struct {
+	CouldNotParse string     `json:"could_not_parse"`
+	HelpStart     string     `json:"help_start"`
+	HelpBody      string     `json:"help_body"`
+	NoResults     string     `json:"no_results"`
+	Footer        string     `json:"footer"`
+	Searches      [][]string `json:"searches"`
 }
 
 // NewSearch initializes all the information needed for a bidirectional search.
@@ -52,4 +62,25 @@ func NewSearch(Redis *Redis) (*Search, *ContextError) {
 func (s *Search) GetLockUnix() int64 {
 	lockTime := time.Now().Add(-s.LockTime)
 	return lockTime.Unix()
+}
+
+func (c *Client) getTitleMatches(title string) []string {
+	var matches []string
+	for _, searches := range c.Config.Constants.Searches {
+		canonical := searches[0]
+		for _, search := range searches {
+			exp, err := regexp.Compile("\b" + regexp.QuoteMeta(search) + "\b")
+			if err != nil {
+				c.dfatal(err)
+				break
+			}
+
+			if exp.MatchString(title) {
+				matches = append(matches, canonical)
+				break
+			}
+		}
+	}
+
+	return matches
 }

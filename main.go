@@ -39,7 +39,7 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 		firstSubmission := submissions[0]
 		lastSubmission := submissions[addedSubmissions-1]
 
-		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %f) to %s (epoch: %f).", addedSubmissions, firstSubmission.FullID, firstSubmission.DateCreated, lastSubmission.FullID, lastSubmission.DateCreated)
+		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %f) to %s (epoch: %f).", addedSubmissions, firstSubmission.FullID, firstSubmission.DateCreated, lastSubmission.F, lastSubmission.DateCreated)
 	}
 
 	client.Logger.Infof("Added %d Pushshift submissions.", submissionsCount)

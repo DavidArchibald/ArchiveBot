@@ -10,11 +10,12 @@ import (
 
 // Config is the toml config that houses all of ArchiveBot's information.
 type Config struct {
-	Application Application  `toml:"Application"`
-	Subreddit   Subreddit    `toml:"Subreddit"`
-	Pushshift   Pushshift    `toml:"Pushshift"`
-	Redis       RedisConfig  `toml:"Redis"`
-	Reddit      RedditConfig `toml:"Reddit"`
+	Application Application     `toml:"Application"`
+	Subreddit   Subreddit       `toml:"Subreddit"`
+	Pushshift   Pushshift       `toml:"Pushshift"`
+	Redis       RedisConfig     `toml:"Redis"`
+	Reddit      RedditConfig    `toml:"Reddit"`
+	Constants   ConstantsConfig `toml:"Constants"`
 }
 
 // Application is

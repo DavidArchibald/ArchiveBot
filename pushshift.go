@@ -34,10 +34,12 @@ type PushshiftSubmission struct {
 // PushshiftFields are the extracted fields of a submission.
 // geddit.Submission is not necessarily guaranteed to match and so is not used.
 type PushshiftFields struct {
-	FullID      string  `json:"name"`
-	Title       string  `json:"title"`
-	Ups         int     `json:"ups"`
-	DateCreated float64 `json:"created_utc"`
+	Permalink     string  `json:"permalink"`
+	FullID        string  `json:"name"`
+	Title         string  `json:"title"`
+	Ups           int     `json:"ups"`
+	DateCreated   float64 `json:"created_utc"`
+	LinkFlairText string  `json:"link_flair_text"`
 }
 
 // UnmarshalJSON from bytes.

@@ -86,7 +86,11 @@ func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 	}
 
 	c.Logger.Infof("Reading submissions %s.", searchDescriptor)
-	v, err := query.Values(params)
+	var one uint8 = 1
+	v, err := query.Values(struct {
+		geddit.ListingOptions
+		RawJSON *uint8 `json:"raw_json,omitempty"`
+	}{params, &one})
 	if err != nil {
 		return nil, NewWrappedError("could not create query parameters", err, []ContextParam{
 			{"params", fmt.Sprint(params)},
