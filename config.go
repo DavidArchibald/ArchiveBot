@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"time"
 
@@ -52,13 +51,8 @@ func OpenConfig(filename string) (*Config, error) {
 	}
 	defer file.Close()
 
-	byt, err := ioutil.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("could not read config: %w", err)
-	}
-
 	config := &Config{}
-	if err := toml.Unmarshal(byt, config); err != nil {
+	if err := toml.NewDecoder(file).Decode(config); err != nil {
 		return nil, fmt.Errorf("could not parse toml: %w", err)
 	}
 

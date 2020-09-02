@@ -59,6 +59,7 @@ func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *Context
 }
 
 func (c *Client) analyzeRedditSubmissions(submissionsSet map[string]struct{}, params geddit.ListingOptions) (map[string]struct{}, *ContextError) {
+	totalSubmissions := 0
 	for {
 		r, err := c.getSubmissions(params)
 		if err != nil {
@@ -67,6 +68,7 @@ func (c *Client) analyzeRedditSubmissions(submissionsSet map[string]struct{}, pa
 
 		submissions := r.Submissions
 		submissionCount := len(submissions)
+		totalSubmissions += submissionCount
 
 		if submissionCount == 0 {
 			break
@@ -86,6 +88,8 @@ func (c *Client) analyzeRedditSubmissions(submissionsSet map[string]struct{}, pa
 			break
 		}
 	}
+
+	c.Logger.Infof("Read %d submissions.", totalSubmissions)
 
 	return submissionsSet, nil
 }
@@ -107,21 +111,21 @@ func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit
 	if isForwards {
 		lastSubmission := submissions[len(submissions)-1]
 		if lastSubmission.DateCreated < c.Search.End.Epoch {
-			if ce := c.setAnchor(RedisAnchorEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
+			if ce := c.setAnchor(RedisSearchEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
 				c.dfatal(ce)
 			}
 		}
 	} else {
 		firstSubmission := submissions[0]
 		if firstSubmission.DateCreated > c.Search.Start.Epoch {
-			if ce := c.setAnchor(RedisAnchorStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
+			if ce := c.setAnchor(RedisSearchStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
 				c.dfatal(ce)
 			}
 		}
 	}
 
 	lastSubmission := submissions[len(submissions)-1]
-	if ce := c.setCurrentAnchor(RedisAnchorContext, lastSubmission.FullID, lastSubmission.DateCreated, isForwards); ce != nil {
+	if ce := c.setCurrentAnchor(RedisSearchCurrent, lastSubmission.FullID, lastSubmission.DateCreated, isForwards); ce != nil {
 		c.dfatal(ce)
 	}
 
@@ -130,9 +134,9 @@ func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit
 
 func (c *Client) getSubmission(id string) (*geddit.Submission, *ContextError) {
 	c.Logger.Infof("Processing submission %s", id)
-	apiURL := c.makePath("/comments", id+".json")
+	apiURL := c.makePath(RedditRouteComments, id+RedditJSONSuffix)
 
-	b, err := c.redditGetRequest(apiURL)
+	b, err := c.doRedditGetRequest(apiURL)
 	if err != nil {
 		return nil, NewWrappedError("could not get submission", err, []ContextParam{
 			{"requestURL", apiURL},
@@ -177,8 +181,12 @@ func (c *Client) makePath(parts ...string) string {
 	return u.String()
 }
 
-func (c *Client) redditGetRequest(url string) ([]byte, *ContextError) {
-	return c.doRequest("GET", url, nil, http.Header{
+func (c *Client) doRedditGetRequest(url string) ([]byte, *ContextError) {
+	return c.doRedditRequest("GET", url, nil)
+}
+
+func (c *Client) doRedditRequest(method, url string, body io.Reader) ([]byte, *ContextError) {
+	return c.doRequest(method, url, body, http.Header{
 		"User-Agent": []string{c.Config.Reddit.UserAgent},
 	})
 }

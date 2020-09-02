@@ -42,6 +42,21 @@ type SubmissionsResponse struct {
 	Next        *geddit.ListingOptions
 }
 
+// RedditSubredditPrefix is the prefix of a subreddit's name.
+const RedditSubredditPrefix = "/r/"
+
+// RedditJSONSuffix makes sure Reddit replies using JSON.
+const RedditJSONSuffix = ".json"
+
+// RedditRouteMessageUnread is for unread messages in your inbox.
+const RedditRouteMessageUnread = "/message/unread"
+
+// RedditRouteReadMessage is for marking messages in your inbox as read.
+const RedditRouteReadMessage = "/api/read_message"
+
+// RedditRouteComments is the route for getting comments.
+const RedditRouteComments = "/comments"
+
 // NewRedditClient creates a new Reddit client.
 func NewRedditClient(config RedditConfig) (*Reddit, error) {
 	session, err := geddit.NewLoginSession(config.Username, config.Password, config.UserAgent)
@@ -77,10 +92,10 @@ func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 			{"params", fmt.Sprint(params)},
 		})
 	}
-	baseURL := c.makePath("/r/", c.Config.Subreddit.Name)
+	baseURL := c.makePath(RedditSubredditPrefix, c.Config.Subreddit.Name)
 	url := fmt.Sprintf("%s/%s.json?%s", baseURL, geddit.NewSubmissions, v.Encode())
 
-	resp, ce := c.redditGetRequest(url)
+	resp, ce := c.doRedditGetRequest(url)
 	if ce != nil {
 		return nil, ce
 	}

@@ -34,10 +34,10 @@ type PushshiftSubmission struct {
 // PushshiftFields are the extracted fields of a submission.
 // geddit.Submission is not necessarily guaranteed to match and so is not used.
 type PushshiftFields struct {
-	ID      string  `json:"id"`
-	Title   string  `json:"title"`
-	Upvotes int     `json:"ups"`
-	Epoch   float64 `json:"created_utc"`
+	FullID      string  `json:"name"`
+	Title       string  `json:"title"`
+	Ups         int     `json:"ups"`
+	DateCreated float64 `json:"created_utc"`
 }
 
 // UnmarshalJSON from bytes.
@@ -138,14 +138,14 @@ func (c *Client) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 			break
 		}
 
-		if submission.ID == lastBatch.ID {
+		if submission.FullID == lastBatch.FullID {
 			submissions = submissions[i+1:]
 			break
 		}
 	}
 
 	// When reading is done, none will be returned or only the submission as the search is made inclusive.
-	if len(submissions) == 0 || (len(submissions) == 1 && submissions[0].ID == lastBatch.ID) {
+	if len(submissions) == 0 || (len(submissions) == 1 && submissions[0].FullID == lastBatch.FullID) {
 		history.last = nil
 		history.done = true
 
@@ -156,14 +156,14 @@ func (c *Client) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 	lastSubmission := submissions[lastIndex]
 	history.last = &lastSubmission
 
-	if lastSubmission.Epoch == lastBatch.Epoch {
+	if lastSubmission.DateCreated == lastBatch.DateCreated {
 		// If this is reached the page is full of submissions of the same epoch.
 		// This edge case is likely only relevant on low limits as it's unlikely the maximal limit of 500 with result in posts with the same epoch.
 		// Reading is still valid if necessitated so this epoch is skipped.
-		history.last.Epoch++
+		history.last.DateCreated++
 
 		return submissions, NewWrappedError("request returned all same epoch", ErrMaySkipSubmissions, []ContextParam{
-			{"epoch", fmt.Sprint(lastSubmission.Epoch)},
+			{"epoch", fmt.Sprint(lastSubmission.DateCreated)},
 		})
 	}
 
@@ -179,7 +179,7 @@ func (c *Client) readSubmissionBatch() ([]PushshiftSubmission, error) {
 
 	if h.last != nil {
 		// Makes the request include the last recorded epoch, for the edge case of the last request ending with an epoch in which there are still more comments of the same epoch right after, outside the search limit.
-		requestURL += fmt.Sprintf("&before=%d", int64(h.last.Epoch)+1)
+		requestURL += fmt.Sprintf("&before=%d", int64(h.last.DateCreated)+1)
 	}
 
 	b, ce := c.doRequest("GET", requestURL, nil, nil)

@@ -9,17 +9,20 @@ import (
 	"github.com/jzelinskie/geddit"
 )
 
-// RedisAnchorCurrent is the current anchor key.
-const RedisAnchorCurrent = "currentAnchor"
+// RedisSearchCurrent is the current anchor key.
+const RedisSearchCurrent = "searchCurrent"
 
-// RedisAnchorStart is the start anchor key.
-const RedisAnchorStart = "startAnchor"
+// RedisSearchStart is the start anchor key.
+const RedisSearchStart = "searchStart"
 
-// RedisAnchorContext is the context anchor key.
-const RedisAnchorContext = "contextAnchor"
+// RedisSearchEnd is the end anchor key.
+const RedisSearchEnd = "searchEnd"
 
-// RedisAnchorEnd is the end anchor key.
-const RedisAnchorEnd = "endAnchor"
+// RedisInboxCurrent is the currently held listing item for iteration.
+const RedisInboxCurrent = "inboxCurrent"
+
+// RedisInboxStart is the first known listing item.
+const RedisInboxStart = "inboxStart"
 
 // RedisUpvotes is the key for submission upvotes.
 const RedisUpvotes = "upvotes"
@@ -30,7 +33,7 @@ const RedisDelimiter = ":"
 // RedisSubmissionPrefix is the prefix for a submission.
 const RedisSubmissionPrefix = "submissions"
 
-// RedisTitles is a set in the form of submissionID:title.
+// RedisTitles is a hash with keys of submissionID to title.
 const RedisTitles = "titles"
 
 // RedisPushshiftStart is the epoch of the first scanned Pushshift data.
@@ -69,21 +72,21 @@ func NewRedisClient(config RedisConfig) (*Redis, error) {
 }
 
 func (c *Client) addSubmissions(submissions []PushshiftSubmission) error {
-	var keyValues []interface{}
+	var submissionMaps []interface{}
 	var titles []interface{}
 	var upvotes []*redis.Z
 	for _, submission := range submissions {
-		keyValues = append(keyValues, RedisSubmissionPrefix+submission.ID, submission)
-		titles = append(titles, submission.ID+RedisDelimiter+submission.Title)
-		upvotes = append(upvotes, &redis.Z{Member: submission.ID, Score: float64(submission.Upvotes)})
+		submissionMaps = append(submissionMaps, RedisSubmissionPrefix+submission.FullID, submission)
+		titles = append(titles, submission.FullID, submission.Title)
+		upvotes = append(upvotes, &redis.Z{Member: submission.FullID, Score: float64(submission.Ups)})
 	}
 
 	r := c.Redis
-	if err := r.MSet(ctx, keyValues...).Err(); err != nil {
+	if err := r.MSet(ctx, submissionMaps...).Err(); err != nil {
 		return fmt.Errorf("could not set submissions: %w", err)
 	}
 
-	if err := r.SAdd(ctx, RedisTitles, titles...).Err(); err != nil {
+	if err := r.HSet(ctx, RedisTitles, titles...).Err(); err != nil {
 		return fmt.Errorf("could not add submission title: %w", err)
 	}
 

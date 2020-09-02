@@ -39,19 +39,22 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 		firstSubmission := submissions[0]
 		lastSubmission := submissions[addedSubmissions-1]
 
-		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %f) to %s (epoch: %f).", addedSubmissions, firstSubmission.ID, firstSubmission.Epoch, lastSubmission.ID, lastSubmission.Epoch)
+		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %f) to %s (epoch: %f).", addedSubmissions, firstSubmission.FullID, firstSubmission.DateCreated, lastSubmission.FullID, lastSubmission.DateCreated)
 	}
 
 	client.Logger.Infof("Added %d Pushshift submissions.", submissionsCount)
 }
 
 func analyzeSubmissions(client *Client) {
+	processName := "Analyze Submissions"
+
 	initialParams := geddit.ListingOptions{
 		Limit: client.Config.Reddit.SearchLimit,
 		Show:  "all",
 	}
 
 	for !client.closed {
+		client.RoutineStart(processName)
 		err := client.AnalyzeSubmissions(initialParams)
 
 		if err != nil {
@@ -59,6 +62,6 @@ func analyzeSubmissions(client *Client) {
 			return
 		}
 
-		<-client.ticker
+		client.RoutineWait(processName)
 	}
 }

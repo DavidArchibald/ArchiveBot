@@ -2,8 +2,6 @@ package main
 
 import (
 	"log"
-	"sync"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -17,8 +15,7 @@ type Client struct {
 	Reddit          *Reddit
 	Search          *Search
 	PushshiftSearch *PushshiftSearch
-	ticker          chan struct{}
-	wg              *sync.WaitGroup
+	Processes       *Processes
 	closed          bool // Can only be set to true, once.
 }
 
@@ -58,39 +55,19 @@ func NewClient(configPath string) *Client {
 
 	pushshiftSearch := NewPushshiftSearch(config)
 
-	ticker := make(chan struct{})
-	wg := &sync.WaitGroup{}
+	processes := NewProcesses()
 
-	return &Client{flags, logger, config, rdb, reddit, search, pushshiftSearch, ticker, wg, false}
+	return &Client{flags, logger, config, rdb, reddit, search, pushshiftSearch, processes, false}
 }
 
 // Close the client's functions.
 func (c *Client) Close() {
 	c.Redis.Close()
 	c.Logger.Sync()
-	c.closed = true
-	<-c.ticker
-	close(c.ticker)
+	c.CloseProcesses()
 }
 
 // Run is used to control the event loop until the client closes.
 func (c *Client) Run() {
-	timer := time.NewTicker(c.Config.Application.LoopDelay)
-	go func() {
-		for !c.closed {
-			c.ticker <- struct{}{}
-			c.wg.Wait()
-			timer.Reset(c.Config.Application.LoopDelay)
-			<-timer.C
-		}
-	}()
-
-	checker := time.NewTicker(time.Second)
-	for !c.closed {
-		<-checker.C
-	}
-
-	timer.Reset(0)
-	checker.Stop()
-	close(c.ticker)
+	c.StartProcesses()
 }

@@ -21,7 +21,7 @@ type Search struct {
 
 // NewSearch initializes all the information needed for a bidirectional search.
 func NewSearch(Redis *Redis) (*Search, *ContextError) {
-	anchorKeys := []string{RedisAnchorCurrent, RedisAnchorStart, RedisAnchorEnd}
+	anchorKeys := []string{RedisSearchCurrent, RedisSearchStart, RedisSearchEnd}
 	anchors := make([]*Anchor, len(anchorKeys))
 
 	for i, anchorKey := range anchorKeys {
