@@ -49,7 +49,6 @@ func NewSearch(Redis *Redis) (*Search, *ContextError) {
 
 	return &Search{anchors[0], anchors[1], anchors[2], false, true, lock, 10}, nil
 }
-}
 
 // GetLockUnix returns the Unix time when posts will become locked.
 func (s *Search) GetLockUnix() int64 {
