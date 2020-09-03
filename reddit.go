@@ -4,24 +4,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 
-	"github.com/google/go-querystring/query"
 	"github.com/jzelinskie/geddit"
 )
 
 // RedditConfig is the toml configuration for Reddit.
 type RedditConfig struct {
-	Username    string `toml:"username"`
-	Password    string `toml:"password"`
-	UserAgent   string `toml:"user_agent"`
-	SearchLimit int    `toml:"search_limit"`
-	URL         string `toml:"url"`
+	Username     string `toml:"username"`
+	Password     string `toml:"password"`
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	RedirectURI  string `toml:"redirect_uri"`
+	UserAgent    string `toml:"user_agent"`
+	SearchLimit  int    `toml:"search_limit"`
+	URL          string `toml:"url"`
 }
 
 // Reddit is the structure for Reddit.
 type Reddit struct {
-	*geddit.LoginSession
-	config RedditConfig
+	sessionCookie *http.Cookie
+	modhash       string
+	config        RedditConfig
 }
 
 // SubmissionData is the data Reddit's submission listing returns.
@@ -59,13 +65,80 @@ const RedditRouteComments = "/comments"
 
 // NewRedditClient creates a new Reddit client.
 func NewRedditClient(config RedditConfig) (*Reddit, error) {
-	session, err := geddit.NewLoginSession(config.Username, config.Password, config.UserAgent)
+	// A copy and paste from geddit.NewLoginSession to expose its values.
+
+	username := config.Username
+	password := config.Password
+
+	loginURL := fmt.Sprintf("https://www.reddit.com/api/login/%s", username)
+	postValues := url.Values{
+		"user":     {username},
+		"passwd":   {password},
+		"api_type": {"json"},
+	}
+
+	req, err := http.NewRequest("POST", loginURL, strings.NewReader(postValues.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", config.UserAgent)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New(resp.Status)
+	}
+
+	var sessionCookie *http.Cookie
+	// Get the session cookie.
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "reddit_session" {
+			sessionCookie = cookie
+		}
+	}
+
+	// Get the modhash from the JSON.
+	type Response struct {
+		JSON struct {
+			Errors [][]string
+			Data   struct {
+				Modhash string
+			}
+		}
+	}
+
+	r := &Response{}
+	err = json.NewDecoder(resp.Body).Decode(r)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Reddit{session, config}, nil
+	if len(r.JSON.Errors) != 0 {
+		var msg []string
+		for _, k := range r.JSON.Errors {
+			msg = append(msg, k[1])
+		}
+		return nil, errors.New(strings.Join(msg, ", "))
+	}
+
+	return &Reddit{sessionCookie, r.JSON.Data.Modhash, config}, nil
 }
+
+// func authenticateInBrowser() {
+// 	url := authenticator.GetAuthenticationURL()
+// 	err := browser.OpenURL(url)
+// 	if err != nil {
+// 		fmt.Printf("Could not open browser: %s\nPlease open URL manually: %s\n", err, url)
+// 	}
+
+// 	http.HandleFunc("/")
+// 	http.ListenAndServe()
+// }
 
 func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsResponse, *ContextError) {
 	isForwards := true // Synonymous with using after
@@ -86,20 +159,19 @@ func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 	}
 
 	c.Logger.Infof("Reading submissions %s.", searchDescriptor)
-	var one uint8 = 1
-	v, err := query.Values(struct {
-		geddit.ListingOptions
-		RawJSON *uint8 `json:"raw_json,omitempty"`
-	}{params, &one})
-	if err != nil {
-		return nil, NewWrappedError("could not create query parameters", err, []ContextParam{
-			{"params", fmt.Sprint(params)},
-		})
-	}
 	baseURL := c.makePath(RedditSubredditPrefix, c.Config.Subreddit.Name)
-	url := fmt.Sprintf("%s/%s.json?%s", baseURL, geddit.NewSubmissions, v.Encode())
+	route := fmt.Sprintf("%s/%s.json", baseURL, geddit.NewSubmissions)
 
-	resp, ce := c.doRedditGetRequest(url)
+	resp, ce := c.doRedditGetRequest(route, url.Values{
+		"t":        []string{params.Time},
+		"limit":    []string{fmt.Sprint(params.Limit)},
+		"after":    []string{params.After},
+		"before":   []string{params.After},
+		"count":    []string{fmt.Sprint(params.Count)},
+		"show":     []string{params.Show},
+		"article":  []string{params.Article},
+		"raw_json": []string{"1"},
+	})
 	if ce != nil {
 		return nil, ce
 	}
@@ -112,6 +184,9 @@ func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 	}
 
 	submissions, err := c.checkSubmissions(r, isForwards)
+	if err != nil {
+		return nil, NewContextlessError(err).Wrap("could not check submissions")
+	}
 
 	next := &geddit.ListingOptions{}
 	*next = params

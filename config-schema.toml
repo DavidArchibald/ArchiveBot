@@ -10,7 +10,10 @@ delay = <integer>                 # Delay between requests in seconds
 [Reddit]
 username = "<string>"             # Account username
 password = "<string>"             # Account password
-user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.1.5 (by /u/LukeAbby)
+client_id = "<string>"            # Script Client ID
+client_secret = "<string>"        # Script Client Secret
+redirect_url = "<string>"         # The redirect url. Currently not implemented.
+user_agent = "<string>"           # User-Agent; format <platform>:Archive-Bot:v0.2.0 by /u/LukeAbby)
 url = "<string>"                  # Reddit API URL, e.g. http://api.reddit.com/
 search_limit = <integer>          # The limit on the number of comments
 
@@ -22,3 +25,15 @@ search_limit = <integer>          # Limit on searching
 addr = "<string>"                 # Database Address
 password = "<string>"             # Database Password
 db = <integer>                    # Database Index
+
+[Constants]
+could_not_parse = "<string>"      # Error message for when the message isn't parsed.
+help_start = "<string>"           # The start of an help message.
+help_body = "<string>"            # The shared portion of a help message.
+no_results = "<string>"           # Message for when no results are found. Takes the command as an argument.
+found_results = "<string>"        # Message for when results are found. Takes the command as an argument,
+footer = "<string>"               # The footer of the bot.
+searches = [                      # A list of searches to use.
+    ["<name>", "<alias>", ...],   # The first name must be the official name and the rest will be used as aliases.
+    ..
+]

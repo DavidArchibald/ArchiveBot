@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/jzelinskie/geddit"
 )
 
@@ -59,6 +60,26 @@ func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *Context
 }
 
 func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, params geddit.ListingOptions) (map[string]string, *ContextError) {
+	currentAnchor, ce := c.Redis.getAnchor(RedisSearchCurrent)
+	if ce != nil {
+		ce.LogError(c.Logger)
+		currentAnchor = nil
+	}
+
+	if currentAnchor != nil {
+		forwards, err := c.Redis.Get(ctx, RedisSearchIsForwards).Result()
+		if err != nil {
+			c.Logger.Errorf("Could not get search direction, default to backwards: %w", err)
+			params.Before = currentAnchor.FullID
+		} else {
+			if forwards == "true" {
+				params.After = currentAnchor.FullID
+			} else {
+				params.Before = currentAnchor.FullID
+			}
+		}
+	}
+
 	totalSubmissions := 0
 	for {
 		r, err := c.getSubmissions(params)
@@ -110,14 +131,14 @@ func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit
 
 	if isForwards {
 		lastSubmission := submissions[len(submissions)-1]
-		if lastSubmission.DateCreated < c.Search.End.Epoch {
+		if c.Search.End == nil || lastSubmission.DateCreated < c.Search.End.Epoch {
 			if ce := c.setAnchor(RedisSearchEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
 				c.dfatal(ce)
 			}
 		}
 	} else {
 		firstSubmission := submissions[0]
-		if firstSubmission.DateCreated > c.Search.Start.Epoch {
+		if c.Search.Start == nil || firstSubmission.DateCreated > c.Search.Start.Epoch {
 			if ce := c.setAnchor(RedisSearchStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
 				c.dfatal(ce)
 			}
@@ -134,9 +155,11 @@ func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit
 
 func (c *Client) getSubmission(id string) (*geddit.Submission, *ContextError) {
 	c.Logger.Infof("Processing submission %s", id)
-	apiURL := c.makePath(RedditRouteComments, id+RedditJSONSuffix+"?raw_json=1")
+	apiURL := c.makePath(RedditRouteComments, id+RedditJSONSuffix)
 
-	b, err := c.doRedditGetRequest(apiURL)
+	b, err := c.doRedditGetRequest(apiURL, url.Values{
+		"raw_json": []string{"1"},
+	})
 	if err != nil {
 		return nil, NewWrappedError("could not get submission", err, []ContextParam{
 			{"requestURL", apiURL},
@@ -181,40 +204,76 @@ func (c *Client) makePath(parts ...string) string {
 	return u.String()
 }
 
-func (c *Client) doRedditGetRequest(url string) ([]byte, *ContextError) {
-	return c.doRedditRequest("GET", url, nil)
+func (c *Client) doRedditGetRequest(route string, query url.Values) ([]byte, *ContextError) {
+	return c.doRedditRequest("GET", route, query, nil)
 }
 
-func (c *Client) doRedditRequest(method, url string, body io.Reader) ([]byte, *ContextError) {
-	return c.doRequest(method, url, body, http.Header{
-		"User-Agent": []string{c.Config.Reddit.UserAgent},
-	})
+func (c *Client) doRedditRequest(method, route string, query url.Values, body io.Reader) ([]byte, *ContextError) {
+	if query == nil {
+		query = make(url.Values)
+	}
+
+	query.Add("uh", c.Reddit.modhash)
+
+	return c.doRequest(
+		method, route+"?"+query.Encode(), body, http.Header{
+			"User-Agent": []string{c.Config.Reddit.UserAgent},
+			"Cookie":     []string{c.Reddit.sessionCookie.String()},
+		},
+	)
 }
 
 func (c *Client) doRequest(method, url string, body io.Reader, header http.Header) ([]byte, *ContextError) {
+	getContext := func() []ContextParam {
+		var bodyString string
+		var err error
+		if body != nil {
+			var b []byte
+			b, err = ioutil.ReadAll(body)
+			bodyString = string(b)
+		} else {
+			bodyString = fmt.Sprint(body)
+		}
+
+		baseParams := []ContextParam{
+			{"Method", method},
+			{"Request URL", url},
+		}
+		headerParam := ContextParam{"Header", fmt.Sprint(header)}
+
+		if err == nil {
+			return append(baseParams, ContextParam{"Body", bodyString}, headerParam)
+		}
+
+		return append(baseParams, ContextParam{"Body Read Error", fmt.Sprint(err)}, headerParam)
+	}
+
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return nil, NewContextError(err, []ContextParam{
-			{"requestURL", url},
-		})
+		return nil, NewContextError(err, append(
+			getContext(),
+			ContextParam{"requestURL", url},
+		))
 	}
 
 	req.Header = header
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, NewContextError(err, []ContextParam{
-			{"request", fmt.Sprint(req)},
-		})
+		return nil, NewContextError(err, append(
+			getContext(),
+			ContextParam{"Request", fmt.Sprint(req)},
+		))
 	}
 	defer resp.Body.Close()
 
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, NewContextError(err, []ContextParam{
-			{"request", fmt.Sprint(req)},
-			{"response", fmt.Sprint(resp)},
-		})
+		return nil, NewContextError(err, append(
+			getContext(),
+			ContextParam{"Request", fmt.Sprint(req)},
+			ContextParam{"Response", fmt.Sprint(resp)},
+		))
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -224,18 +283,20 @@ func (c *Client) doRequest(method, url string, body io.Reader, header http.Heade
 
 			remaining, err := strconv.Atoi(remainingHeader)
 			if err != nil {
-				return nil, NewWrappedError("could not parse rate limit header", err, []ContextParam{
-					{"X-Ratelimit-Remaining", remainingHeader},
-					{"All Headers", fmt.Sprint(resp.Header)},
-				})
+				return nil, NewWrappedError("could not parse rate limit header", err, append(
+					getContext(),
+					ContextParam{"X-Ratelimit-Remaining", remainingHeader},
+					ContextParam{"All Headers", fmt.Sprint(resp.Header)},
+				))
 			}
 
 			reset, err := strconv.Atoi(resetHeader)
 			if err != nil {
-				return nil, NewWrappedError("could not parse reset limit header", err, []ContextParam{
-					{"X-Ratelimit-Reset", resetHeader},
-					{"All Headers", fmt.Sprint(resp.Header)},
-				})
+				return nil, NewWrappedError("could not parse reset limit header", err, append(
+					getContext(),
+					ContextParam{"X-Ratelimit-Reset", resetHeader},
+					ContextParam{"All Headers", fmt.Sprint(resp.Header)},
+				))
 			}
 
 			if remaining < 1 {
@@ -247,10 +308,11 @@ func (c *Client) doRequest(method, url string, body io.Reader, header http.Heade
 			return c.doRequest(method, url, body, header)
 		}
 
-		return nil, NewContextError(errors.New("not OK status"), []ContextParam{
-			{"status", fmt.Sprint(resp.StatusCode)},
-			{"responseBody", string(b)},
-		})
+		return nil, NewContextError(errors.New("not OK status"), append(
+			getContext(),
+			ContextParam{"Status", fmt.Sprint(resp.StatusCode)},
+			ContextParam{"Response Body", string(b)},
+		))
 	}
 
 	return b, nil
@@ -262,11 +324,19 @@ type Anchor struct {
 	Epoch  float64
 }
 
-func getAnchor(anchor string) (*Anchor, *ContextError) {
-	anchorParts := strings.Split(anchor, RedisDelimiter)
+func (r *Redis) getAnchor(anchorKey string) (*Anchor, *ContextError) {
+	anchorString, err := r.Get(ctx, anchorKey).Result()
+	if err != nil {
+		if err.Error() == redis.Nil.Error() {
+			return nil, NewContextlessError(err)
+		}
+		return nil, NewWrappedError(fmt.Sprintf("could not get %s", anchorKey), err, nil)
+	}
+
+	anchorParts := strings.Split(anchorString, RedisDelimiter)
 	if len(anchorParts) != 2 {
 		return nil, NewContextError(errors.New("anchor does not have 2 parts"), []ContextParam{
-			{"Anchor", anchor},
+			{"Anchor", anchorString},
 			{"Anchor Parts", fmt.Sprint(anchorParts)},
 		})
 	}
@@ -274,14 +344,13 @@ func getAnchor(anchor string) (*Anchor, *ContextError) {
 	fullID, epochString := anchorParts[0], anchorParts[1]
 
 	if err := checkFullName(fullID); err != nil {
-		return nil, err.AddContext("Anchor", anchor)
+		return nil, err.AddContext("Anchor", anchorString)
 	}
 
 	var epoch float64
-	var err error
 	if epoch, err = epochToFloat64(epochString); err != nil {
 		return nil, NewContextError(err, []ContextParam{
-			{"Anchor", anchor},
+			{"Anchor", anchorString},
 			{"Epoch String", epochString},
 		})
 	}
