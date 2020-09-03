@@ -62,7 +62,9 @@ func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *Context
 func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, params geddit.ListingOptions) (map[string]string, *ContextError) {
 	currentAnchor, ce := c.Redis.getAnchor(RedisSearchCurrent)
 	if ce != nil {
-		ce.LogError(c.Logger)
+		if ce.Unwrap().Error() != redis.Nil.Error() {
+			ce.LogError(c.Logger)
+		}
 		currentAnchor = nil
 	}
 

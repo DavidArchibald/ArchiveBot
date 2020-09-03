@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,13 +17,17 @@ const RedditMarkReadBatch = 25
 // Listing is the data a listing will return.
 type Listing struct {
 	Data struct {
-		Children []ListingItem `json:"children"`
+		Kind     string `json:"kind"`
+		Children []struct {
+			Data ListingItem `json:"data"`
+		} `json:"children"`
 	} `json:"data"`
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
 }
 
-// ListingItem is an individual listing item.
+// ListingItem is the combined information of different listing kinds.
 type ListingItem struct {
-	Type string `json:"type"`
 	Body string `json:"body"`
 	*geddit.Submission
 }
@@ -73,25 +76,20 @@ func (c *Client) replyToInbox() *ContextError {
 
 	var read []string
 	for _, item := range listing.Data.Children {
-		if item.Type == "username_mention" {
-			err := c.replyToComment(item)
+		data := item.Data
+		if strings.Contains(data.Body, "u/"+c.Config.Reddit.Username) {
+			err := c.replyToComment(data)
 			if err != nil {
 				c.dfatal(err)
 				continue
 			}
-			read = append(read, item.FullID)
+			read = append(read, data.FullID)
 		} else {
-			c.Logger.Infof("Not a mention, skipping processing message (ID: %s).\nBody: %s", item.ID, item.Body)
+			c.Logger.Infof("Not a mention, skipping processing message (ID: %s).\nBody: %s", data.FullID, data.Body)
 		}
 	}
 
 	return c.MarkAsRead(read)
-}
-
-// APICommentPayload is the payload for /api/comment.
-type APICommentPayload struct {
-	Parent string `json:"parent"`
-	Text   string `json:"text"`
 }
 
 // ErrCouldNotParse is the error given when a reply can't be parsed.
@@ -186,7 +184,10 @@ func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError 
 
 	var results []redis.Z
 	if len(searchResults) != 0 && len(flairs) != 0 {
-		results = c.ZIntersect(searchResults, flairs)[:25]
+		results = c.ZIntersect(searchResults, flairs)
+		if len(results) > 25 {
+			results = results[:25]
+		}
 	} else if len(searchResults) != 0 {
 		results = searchResults
 	} else if len(flairs) != 0 {
@@ -205,13 +206,13 @@ func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError 
 	}
 
 	argumentString := strings.Join(arguments, " ")
-	if len(links) != 0 {
+	if len(links) == 0 {
 		noResults := fmt.Sprintf(constants.NoResults, argumentString)
 		return c.reply(l, noResults)
 	}
 
 	allLinks := strings.Join(links, "\n\n")
-	foundResults := fmt.Sprintf(constants.FoundResults, argumentString)
+	foundResults := fmt.Sprintf(constants.FoundResults+"\n\n", argumentString)
 	return c.reply(l, foundResults+allLinks+constants.Footer)
 }
 
@@ -247,20 +248,15 @@ func (c *Client) ZIntersect(a []redis.Z, b []redis.Z) []redis.Z {
 }
 
 func (c *Client) reply(l ListingItem, message string) *ContextError {
-	b, err := json.Marshal(APICommentPayload{l.FullID, message})
-	if err != nil {
-		return NewContextError(err, []ContextParam{
-			{"Author Reply", l.Author},
-			{"Comment ID", l.FullID},
-		})
-	}
-
-	r := bytes.NewReader(b)
-	if _, ce := c.doRedditRequest("POST", "/api/comment", nil, r); ce != nil {
+	_, ce := c.doRedditRequest("POST", c.makePath("/api/comment"), url.Values{
+		"thing_id": {l.FullID},
+		"text":     {message},
+	}, nil)
+	if ce != nil {
 		return NewWrappedError("replying to comment", ce, []ContextParam{
 			{"Author Reply", l.Author},
 			{"Comment ID", l.FullID},
-			{"Body", string(b)},
+			{"Body", message},
 		})
 	}
 
@@ -275,7 +271,10 @@ type RedditMarkReadPayload struct {
 // MarkAsRead batches ids up to RedditMarkReadBatch and marks them as read.
 func (c *Client) MarkAsRead(ids []string) *ContextError {
 	for len(ids) > 0 {
-		idBatch := ids[:RedditMarkReadBatch]
+		idBatch := ids
+		if len(ids) > RedditMarkReadBatch {
+			idBatch = ids[:RedditMarkReadBatch]
+		}
 
 		if len(idBatch) == 1 {
 			c.Logger.Infof("Marking id: %v as read.", idBatch[0])
@@ -285,17 +284,20 @@ func (c *Client) MarkAsRead(ids []string) *ContextError {
 
 		idList := strings.Join(idBatch, ",")
 
-		b, err := json.Marshal(RedditMarkReadPayload{idList})
-		if err != nil {
-			return NewContextlessError(err).Wrap("could not marshal Reddit mark read payload")
-		}
+		// b, err := json.Marshal(RedditMarkReadPayload{idList})
+		// if err != nil {
+		// 	return NewContextlessError(err).Wrap("could not marshal Reddit mark read payload")
+		// }
 
-		_, ce := c.doRedditRequest("POST", RedditRouteReadMessage, url.Values{"raw_json": []string{"1"}}, bytes.NewReader(b))
+		_, ce := c.doRedditRequest("POST", c.makePath(RedditRouteReadMessage), url.Values{
+			"raw_json": []string{"1"},
+			"id":       []string{idList},
+		}, nil)
 		if ce != nil {
 			return ce
 		}
 
-		ids = ids[RedditMarkReadBatch:]
+		ids = ids[len(idBatch):]
 	}
 
 	return nil

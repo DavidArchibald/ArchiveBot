@@ -98,7 +98,7 @@ func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) erro
 		submissions = append(submissions, fullID, submission)
 
 		link := fmt.Sprintf("[%s](%s)", submission.Title, submission.Permalink)
-		links = append(links, submission, link)
+		links = append(links, fullID, link)
 
 		upvotes = append(upvotes, &redis.Z{Member: fullID, Score: float64(submission.Ups)})
 
