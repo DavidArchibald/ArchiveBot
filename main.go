@@ -12,6 +12,7 @@ func main() {
 	readSubmissions(client, nextSubmissions)
 
 	go analyzeSubmissions(client)
+	go client.ReplyToInbox()
 
 	client.Run()
 }
