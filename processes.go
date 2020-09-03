@@ -27,7 +27,7 @@ func NewProcesses() *Processes {
 	var reserved = make(map[string]reservation)
 	var nextReserve = make(map[string]reservation)
 	var ticker = make(chan struct{})
-	var wg *sync.WaitGroup
+	wg := &sync.WaitGroup{}
 
 	return &Processes{reserveLock, reserved, nextReserve, ticker, wg}
 }
@@ -74,7 +74,20 @@ func (c *Client) RoutineStart(name string) {
 
 }
 
-// RoutineWait will block until the process may
+// RoutineWait will block until the process may continue.
 func (c *Client) RoutineWait(name string) {
 	<-c.Processes.ticker
 }
+
+// RoutineCrash will handle a routine crashing.
+func (c *Client) RoutineCrash(name string) {
+	if err := recover(); err != nil {
+		c.dpanic(err)
+	}
+}
+
+// ReserveNextLoop is.
+func (c *Client) ReserveNextLoop(name string, reservation uint64, buffer uint64) {}
+
+// Release will release any held limits
+func (c *Client) Release(name string) {}

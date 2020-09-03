@@ -8,6 +8,8 @@ import (
 	"github.com/jzelinskie/geddit"
 )
 
+// Reddit Search anchors.
+
 // RedisSearchCurrent is the current anchor key.
 const RedisSearchCurrent = "searchCurrent"
 
@@ -17,32 +19,15 @@ const RedisSearchStart = "searchStart"
 // RedisSearchEnd is the end anchor key.
 const RedisSearchEnd = "searchEnd"
 
+// Inbox Anchors
+
 // RedisInboxCurrent is the currently held listing item for iteration.
 const RedisInboxCurrent = "inboxCurrent"
 
 // RedisInboxStart is the first known listing item.
 const RedisInboxStart = "inboxStart"
 
-// RedisUpvotes is the key for submission upvotes.
-const RedisUpvotes = "upvotes"
-
-// RedisDelimiter is the delimiter for fields.
-const RedisDelimiter = ":"
-
-// RedisSearchPrefix is the prefix for a search term.
-const RedisSearchPrefix = "search" + RedisDelimiter
-
-// RedisFlairsPrefix is a hash with keys of submission full names to their flair.
-const RedisFlairsPrefix = "flairs" + RedisDelimiter
-
-// RedisSubmissions is a hash with keys of submission full names to their JSON data.
-const RedisSubmissions = "submissions"
-
-// RedisTitles is a hash with keys of submission full names to their title.
-const RedisTitles = "titles"
-
-// RedisPermalinks is a hash with keys of submission full names to their permalink.
-const RedisPermalinks = "permalinks"
+// Pushshift Anchors
 
 // RedisPushshiftStart is the epoch of the first scanned Pushshift data.
 const RedisPushshiftStart = "pushshiftStartEpoch"
@@ -55,6 +40,27 @@ const RedisPushshiftTraversed = "pushshiftTraversed"
 
 // RedisSearchIsForwards represents a boolean value for whether to traverse the current anchor forwards or backwards.
 const RedisSearchIsForwards = "searchForwards"
+
+// RedisDelimiter is the delimiter for fields.
+const RedisDelimiter = ":"
+
+// RedisSearchPrefix is the prefix for a search term corresponding to a set of submission IDs sorted by date created.
+const RedisSearchPrefix = "search" + RedisDelimiter
+
+// RedisUpvotes is the key for submission upvotes.
+const RedisUpvotes = "upvotes"
+
+// RedisFlairNames is a set of existing flairs
+const RedisFlairNames = "flairNames"
+
+// RedisFlairsPrefix is the prefix for a flair corresponding to a set of submission IDs sorted by date created.
+const RedisFlairsPrefix = "flairs" + RedisDelimiter
+
+// RedisSubmissions is a hash with keys of submission IDs to their JSON data.
+const RedisSubmissions = "submissions"
+
+// RedisLinks is a hash with keys of submission IDs to a link formatted as [title](permalink).
+const RedisLinks = "links"
 
 // Redis is a client of redis information
 type Redis struct {
@@ -81,21 +87,26 @@ func NewRedisClient(config RedisConfig) (*Redis, error) {
 
 func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) error {
 	var submissions []interface{}
-	var titles []interface{}
+	var links []interface{}
 	var upvotes []*redis.Z
+
 	flairs := make(map[string][]*redis.Z)
 	searches := make(map[string][]*redis.Z)
+
 	for _, submission := range pushshiftSubmissions {
-		submissions = append(submissions, submission.FullID, submission)
-		titles = append(titles, submission.FullID, submission.Title)
+		fullID := "t3_" + submission.ID
+		submissions = append(submissions, fullID, submission)
 
-		upvotes = append(upvotes, &redis.Z{Member: submission.FullID, Score: float64(submission.Ups)})
+		link := fmt.Sprintf("[%s](%s)", submission.Title, submission.Permalink)
+		links = append(links, submission, link)
 
-		flairs[submission.LinkFlairText] = append(flairs[submission.LinkFlairText], &redis.Z{Member: submission.FullID, Score: submission.DateCreated})
+		upvotes = append(upvotes, &redis.Z{Member: fullID, Score: float64(submission.Ups)})
+
+		flairs[submission.LinkFlairText] = append(flairs[submission.LinkFlairText], &redis.Z{Member: fullID, Score: submission.DateCreated})
 
 		matches := c.getTitleMatches(submission.Title)
 		for _, match := range matches {
-			searches[match] = append(searches[match], &redis.Z{Score: submission.DateCreated, Member: submission.FullID})
+			searches[match] = append(searches[match], &redis.Z{Score: submission.DateCreated, Member: fullID})
 		}
 	}
 
@@ -104,7 +115,7 @@ func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) erro
 		return fmt.Errorf("could not set submissions: %w", err)
 	}
 
-	if err := r.HSet(ctx, RedisTitles, titles...).Err(); err != nil {
+	if err := r.HSet(ctx, RedisLinks, links...).Err(); err != nil {
 		return fmt.Errorf("could not add submission title: %w", err)
 	}
 
@@ -112,10 +123,21 @@ func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) erro
 		return fmt.Errorf("could not add submission upvotes: %w", err)
 	}
 
-	for flairName, flairs := range flairs {
-		if err := r.ZAdd(ctx, RedisFlairsPrefix+flairName, flairs...).Err(); err != nil {
+	var flairNames []interface{}
+	flairsSet := make(map[string]struct{})
+	for flairName, members := range flairs {
+		if err := r.ZAdd(ctx, RedisFlairsPrefix+flairName, members...).Err(); err != nil {
 			return fmt.Errorf("could not add flairs for %s: %w", flairName, err)
 		}
+
+		if _, ok := flairsSet[flairName]; !ok {
+			flairsSet[flairName] = struct{}{}
+			flairNames = append(flairNames, flairName)
+		}
+	}
+
+	if err := r.SAdd(ctx, RedisFlairNames, flairNames...).Err(); err != nil {
+		return fmt.Errorf("could not add Redis flair names: %w", err)
 	}
 
 	for searchName, search := range searches {
@@ -136,6 +158,50 @@ func (c *Client) getHashMap(key string) (map[string]string, *ContextError) {
 	}
 
 	return submissions, nil
+}
+
+func (c *Client) getSetMap(prefix string) (map[string][]redis.Z, *ContextError) {
+	items := make(map[string][]redis.Z)
+
+	rdb := c.Redis
+	iter := rdb.Scan(ctx, 0, prefix+"*", 0).Iterator()
+
+	for iter.Next(ctx) {
+		val := iter.Val()
+		scores, ce := c.getZSet(val)
+
+		if ce != nil {
+			return nil, NewWrappedError(fmt.Sprintf("error in reading %s", val), ce, nil)
+		}
+
+		items[val] = scores
+	}
+
+	if err := iter.Err(); err != nil {
+		return nil, NewWrappedError(fmt.Sprintf(`error in sets of prefix "%s"`, prefix), err, nil)
+	}
+
+	return items, nil
+}
+
+func (c *Client) getZSet(name string) ([]redis.Z, *ContextError) {
+	return c.getZSetRange(name, &redis.ZRangeBy{
+		Min:    "-inf",
+		Max:    "+inf",
+		Offset: 0,
+	})
+}
+
+func (c *Client) getZSetRange(name string, rangeBy *redis.ZRangeBy) ([]redis.Z, *ContextError) {
+	result, err := c.Redis.ZRangeByScoreWithScores(ctx, name, rangeBy).Result()
+
+	if err != nil {
+		return nil, NewContextError(err, []ContextParam{
+			{"Set Key", name},
+		})
+	}
+
+	return result, nil
 }
 
 func (c *Client) updateVotes(submissions []*geddit.Submission) *ContextError {

@@ -93,6 +93,15 @@ func (c *Client) dfatal(err error) {
 	}
 }
 
+// dpanic panics only in development mode.
+func (c *Client) dpanic(v interface{}) {
+	if c.IsProduction {
+		panic(v)
+	} else {
+		c.Logger.Error("UNEXPECTED PANIC: %v", v)
+	}
+}
+
 // ContextError is an error with additional debugging context.
 type ContextError struct {
 	context     []ContextParam

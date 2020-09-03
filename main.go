@@ -30,7 +30,8 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 		}
 
 		if err := client.addSubmissions(submissions); err != nil {
-			client.Logger.Error(err)
+			client.dfatal(err)
+			break
 		}
 
 		addedSubmissions := len(submissions)
@@ -39,7 +40,7 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 		firstSubmission := submissions[0]
 		lastSubmission := submissions[addedSubmissions-1]
 
-		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %f) to %s (epoch: %f).", addedSubmissions, firstSubmission.FullID, firstSubmission.DateCreated, lastSubmission.F, lastSubmission.DateCreated)
+		client.Logger.Infof("Added %d Pushshift submissions: %s (epoch: %f) to %s (epoch: %f).", addedSubmissions, "t3_"+firstSubmission.ID, firstSubmission.DateCreated, "t3_"+lastSubmission.ID, lastSubmission.DateCreated)
 	}
 
 	client.Logger.Infof("Added %d Pushshift submissions.", submissionsCount)
@@ -59,7 +60,6 @@ func analyzeSubmissions(client *Client) {
 
 		if err != nil {
 			client.dfatal(err)
-			return
 		}
 
 		client.RoutineWait(processName)

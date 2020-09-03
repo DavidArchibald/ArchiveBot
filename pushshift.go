@@ -35,7 +35,7 @@ type PushshiftSubmission struct {
 // geddit.Submission is not necessarily guaranteed to match and so is not used.
 type PushshiftFields struct {
 	Permalink     string  `json:"permalink"`
-	FullID        string  `json:"name"`
+	ID            string  `json:"id"`
 	Title         string  `json:"title"`
 	Ups           int     `json:"ups"`
 	DateCreated   float64 `json:"created_utc"`
@@ -63,7 +63,7 @@ func (s *PushshiftSubmission) UnmarshalJSON(b []byte) error {
 }
 
 // MarshalJSON turns into a submission into JSON.
-func (s *PushshiftSubmission) MarshalJSON() ([]byte, error) {
+func (s PushshiftSubmission) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.Raw)
 }
 
@@ -140,14 +140,14 @@ func (c *Client) ReadSubmissionBatch() ([]PushshiftSubmission, error) {
 			break
 		}
 
-		if submission.FullID == lastBatch.FullID {
+		if submission.ID == lastBatch.ID {
 			submissions = submissions[i+1:]
 			break
 		}
 	}
 
 	// When reading is done, none will be returned or only the submission as the search is made inclusive.
-	if len(submissions) == 0 || (len(submissions) == 1 && submissions[0].FullID == lastBatch.FullID) {
+	if len(submissions) == 0 || (len(submissions) == 1 && submissions[0].ID == lastBatch.ID) {
 		history.last = nil
 		history.done = true
 
