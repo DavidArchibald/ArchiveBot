@@ -96,10 +96,11 @@ func (c *Client) replyToInbox() *ContextError {
 var ErrCouldNotParse = errors.New("Could not parse")
 
 func (c *Client) replyToComment(l ListingItem) *ContextError {
-	mention := "/u/" + c.Config.Reddit.Username + " "
+	body := strings.TrimPrefix(l.Body, "/")
+	mention := "u/" + c.Config.Reddit.Username + " "
 
 	notParse := c.Config.Constants.CouldNotParse + c.Config.Constants.Footer
-	if !strings.HasPrefix(l.Body, mention) {
+	if !strings.HasPrefix(body, mention) {
 		c.reply(l, notParse)
 		return NewContextError(ErrCouldNotParse, []ContextParam{
 			{"Reply Author", l.Author},
@@ -109,7 +110,7 @@ func (c *Client) replyToComment(l ListingItem) *ContextError {
 		})
 	}
 
-	body := l.Body[len(mention):]
+	body = body[len(mention):]
 	fields := strings.Fields(body)
 
 	name := strings.ToLower(fields[0])
@@ -119,12 +120,14 @@ func (c *Client) replyToComment(l ListingItem) *ContextError {
 	constants := c.Config.Constants
 	switch name {
 	case "help":
+		c.MarkAsRead([]string{l.FullID})
 		return c.HelpCommand(l, arguments)
 	case "find":
 		fallthrough
 	case "search":
 		return c.SearchCommand(l, arguments)
 	default:
+		c.MarkAsRead([]string{l.FullID})
 		return c.reply(l, fmt.Sprintf(constants.CouldNotParse+constants.HelpBody, fmt.Sprintf("Unknown command `%s`.", name)))
 	}
 }
