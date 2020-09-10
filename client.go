@@ -26,6 +26,8 @@ type Flags struct {
 
 // NewClient creates the needed Client connections.
 func NewClient(configPath string) *Client {
+	client := &Client{}
+
 	config, err := OpenConfig(configPath)
 	if err != nil {
 		log.Fatalf("could not open config: %v", err)
@@ -37,25 +39,25 @@ func NewClient(configPath string) *Client {
 		log.Fatal("could not creator logger: %w", err)
 	}
 
-	rdb, err := NewRedisClient(config.Redis)
+	rdb, err := NewRedisClient(client, config)
 	if err != nil {
 		logger.Panicf("could not create Redis client: %v", err)
 	}
 
-	reddit, err := NewRedditClient(config.Reddit)
+	reddit, err := NewRedditClient(client, config)
 	if err != nil {
 		defer rdb.Close()
 		logger.Panicf("could not create Reddit client: %v", err)
 	}
 
-	search, ce := NewSearch(rdb)
+	search, ce := NewSearch(client, config)
 	if ce != nil {
 		ce.Panic(logger)
 	}
 
-	pushshiftSearch := NewPushshiftSearch(config)
+	pushshiftSearch := NewPushshiftSearch(client, config)
 
-	processes := NewProcesses()
+	processes := NewProcesses(client, config)
 
 	return &Client{flags, logger, config, rdb, reddit, search, pushshiftSearch, processes, false}
 }

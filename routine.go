@@ -11,7 +11,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/jzelinskie/geddit"
@@ -20,7 +19,7 @@ import (
 // AnalyzeSubmissions analyzes Reddit submissions.
 // The parameters Before, After, and Count params are handled in AnalyzeSubmissions.
 func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *ContextError {
-	submissions, err := c.getHashMap(RedisSubmissions)
+	submissions, err := c.Redis.getHashMap(RedisSubmissions)
 	if err != nil {
 		if !c.IsProduction {
 			return err
@@ -84,7 +83,7 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 
 	totalSubmissions := 0
 	for {
-		r, err := c.getSubmissions(params)
+		r, err := c.Reddit.getSubmissions(params)
 		if err != nil {
 			return submissionsMap, err
 		}
@@ -101,7 +100,7 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 			delete(submissionsMap, submission.ID)
 		}
 
-		if ce := c.updateVotes(submissions); ce != nil {
+		if ce := c.Redis.updateVotes(submissions); ce != nil {
 			c.dfatal(ce)
 		}
 
@@ -117,38 +116,39 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 	return submissionsMap, nil
 }
 
-func (c *Client) checkSubmissions(r *SubmissionData, isForwards bool) ([]*geddit.Submission, error) {
-	submissions := make([]*geddit.Submission, len(r.Data.Children))
-	for i, child := range r.Data.Children {
+func (c *Client) checkSubmissions(data *SubmissionData, isForwards bool) ([]*geddit.Submission, error) {
+	submissions := make([]*geddit.Submission, len(data.Data.Children))
+	for i, child := range data.Data.Children {
 		submissions[i] = child.Data
 	}
 
 	// EDGE CASE: How to deal with <3 submissions?
 	if len(submissions) == 0 {
 		// If you have reached the beginning or the end and are searching in that direction nothing to do.
-		if (r.Data.After == "" && isForwards) || (r.Data.Before == "" && !isForwards) {
+		if (data.Data.After == "" && isForwards) || (data.Data.Before == "" && !isForwards) {
 			return submissions, nil
 		}
 	}
 
+	r := c.Redis
 	if isForwards {
 		lastSubmission := submissions[len(submissions)-1]
 		if c.Search.End == nil || lastSubmission.DateCreated < c.Search.End.Epoch {
-			if ce := c.setAnchor(RedisSearchEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
+			if ce := r.setAnchor(RedisSearchEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
 				c.dfatal(ce)
 			}
 		}
 	} else {
 		firstSubmission := submissions[0]
 		if c.Search.Start == nil || firstSubmission.DateCreated > c.Search.Start.Epoch {
-			if ce := c.setAnchor(RedisSearchStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
+			if ce := r.setAnchor(RedisSearchStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
 				c.dfatal(ce)
 			}
 		}
 	}
 
 	lastSubmission := submissions[len(submissions)-1]
-	if ce := c.setCurrentAnchor(RedisSearchCurrent, lastSubmission.FullID, lastSubmission.DateCreated, isForwards); ce != nil {
+	if ce := r.setCurrentAnchor(RedisSearchCurrent, lastSubmission.FullID, lastSubmission.DateCreated, isForwards); ce != nil {
 		c.dfatal(ce)
 	}
 
@@ -217,6 +217,13 @@ func (c *Client) doRedditRequest(method, route string, query url.Values, body io
 
 	query.Add("uh", c.Reddit.modhash)
 
+	// now := time.Now()
+	// if !now.After(c.Reddit.rateLimit.resetTime) {
+	// 	<-c.Reddit.
+	// }
+
+	// c.Reddit.lock
+
 	return c.doRequest(
 		method, route+"?"+query.Encode(), body, http.Header{
 			"User-Agent": []string{c.Config.Reddit.UserAgent},
@@ -278,46 +285,34 @@ func (c *Client) doRequest(method, url string, body io.Reader, header http.Heade
 		))
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusTooManyRequests {
-			remainingHeader := resp.Header.Get("X-Ratelimit-Remaining")
-			resetHeader := resp.Header.Get("X-Ratelimit-Reset")
-
-			remaining, err := strconv.Atoi(remainingHeader)
-			if err != nil {
-				return nil, NewWrappedError("could not parse rate limit header", err, append(
-					getContext(),
-					ContextParam{"X-Ratelimit-Remaining", remainingHeader},
-					ContextParam{"All Headers", fmt.Sprint(resp.Header)},
-				))
-			}
-
-			reset, err := strconv.Atoi(resetHeader)
-			if err != nil {
-				return nil, NewWrappedError("could not parse reset limit header", err, append(
-					getContext(),
-					ContextParam{"X-Ratelimit-Reset", resetHeader},
-					ContextParam{"All Headers", fmt.Sprint(resp.Header)},
-				))
-			}
-
-			if remaining < 1 {
-				time.Sleep(time.Duration(reset))
-			} else {
-				time.Sleep(time.Duration(1))
-			}
-
-			return c.doRequest(method, url, body, header)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if ce := c.doRateLimit(resp); ce != nil {
+			return nil, NewContextError(ce, getContext())
 		}
 
+	} else if resp.StatusCode != http.StatusOK {
 		return nil, NewContextError(errors.New("not OK status"), append(
 			getContext(),
 			ContextParam{"Status", fmt.Sprint(resp.StatusCode)},
-			ContextParam{"Response Body", string(b)},
 		))
 	}
 
 	return b, nil
+}
+
+func (c *Client) doRateLimit(resp *http.Response) *ContextError {
+	r := c.Reddit
+	rateLimit, ce := r.NewRateLimit(resp)
+	if ce != nil {
+		return ce
+	}
+
+	r.SetRateLimit(rateLimit)
+	for !c.closed && !r.IsRateLimited() {
+		<-c.Processes.Tick()
+	}
+
+	return nil
 }
 
 // Anchor represents a place in the search.

@@ -16,7 +16,7 @@ type PushshiftSearch struct {
 }
 
 // NewPushshiftSearch constructs a search .
-func NewPushshiftSearch(config *Config) *PushshiftSearch {
+func NewPushshiftSearch(client *Client, config *Config) *PushshiftSearch {
 	return &PushshiftSearch{}
 }
 

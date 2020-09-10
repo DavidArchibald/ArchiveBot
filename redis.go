@@ -59,33 +59,38 @@ const RedisFlairsPrefix = "flairs" + RedisDelimiter
 // RedisSubmissions is a hash with keys of submission IDs to their JSON data.
 const RedisSubmissions = "submissions"
 
-// RedisLinks is a hash with keys of submission IDs to a link formatted as [title](permalink).
+// RedisLinks is a hash with keys of process full names to a link formatted as [title](permalink).
 const RedisLinks = "links"
+
+// RedisProcessed is a set of processed full names.
+const RedisProcessed = "processed"
 
 // Redis is a client of redis information
 type Redis struct {
 	*redis.Client
-	config RedisConfig
+	client *Client
+	config *Config
 }
 
 var ctx = context.Background()
 
 // NewRedisClient creates a new Redis client.
-func NewRedisClient(config RedisConfig) (*Redis, error) {
+func NewRedisClient(client *Client, config *Config) (*Redis, error) {
+	redisConfig := config.Redis
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     config.Addr,
-		Password: config.Password,
-		DB:       config.DB,
+		Addr:     redisConfig.Addr,
+		Password: redisConfig.Password,
+		DB:       redisConfig.DB,
 	})
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		return nil, err
 	}
 
-	return &Redis{rdb, config}, nil
+	return &Redis{rdb, client, config}, nil
 }
 
-func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) error {
+func (r *Redis) addSubmissions(pushshiftSubmissions []PushshiftSubmission) error {
 	var submissions []interface{}
 	var links []interface{}
 	var upvotes []*redis.Z
@@ -104,13 +109,12 @@ func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) erro
 
 		flairs[submission.LinkFlairText] = append(flairs[submission.LinkFlairText], &redis.Z{Member: fullID, Score: submission.DateCreated})
 
-		matches := c.getTitleMatches(submission.Title)
+		matches := r.client.Search.getTitleMatches(submission.Title)
 		for _, match := range matches {
 			searches[match] = append(searches[match], &redis.Z{Score: submission.DateCreated, Member: fullID})
 		}
 	}
 
-	r := c.Redis
 	if err := r.HSet(ctx, RedisSubmissions, submissions...).Err(); err != nil {
 		return fmt.Errorf("could not set submissions: %w", err)
 	}
@@ -149,9 +153,8 @@ func (c *Client) addSubmissions(pushshiftSubmissions []PushshiftSubmission) erro
 	return nil
 }
 
-func (c *Client) getHashMap(key string) (map[string]string, *ContextError) {
-	rdb := c.Redis
-	submissions, err := rdb.HGetAll(ctx, key).Result()
+func (r *Redis) getHashMap(key string) (map[string]string, *ContextError) {
+	submissions, err := r.HGetAll(ctx, key).Result()
 
 	if err != nil {
 		return nil, NewWrappedError(fmt.Sprintf("error in reading %s", key), err, nil)
@@ -160,15 +163,14 @@ func (c *Client) getHashMap(key string) (map[string]string, *ContextError) {
 	return submissions, nil
 }
 
-func (c *Client) getSetMap(prefix string) (map[string][]redis.Z, *ContextError) {
+func (r *Redis) getSetMap(prefix string) (map[string][]redis.Z, *ContextError) {
 	items := make(map[string][]redis.Z)
 
-	rdb := c.Redis
-	iter := rdb.Scan(ctx, 0, prefix+"*", 0).Iterator()
+	iter := r.Scan(ctx, 0, prefix+"*", 0).Iterator()
 
 	for iter.Next(ctx) {
 		val := iter.Val()
-		scores, ce := c.getZSet(val)
+		scores, ce := r.getZSet(val)
 
 		if ce != nil {
 			return nil, NewWrappedError(fmt.Sprintf("error in reading %s", val), ce, nil)
@@ -184,16 +186,16 @@ func (c *Client) getSetMap(prefix string) (map[string][]redis.Z, *ContextError) 
 	return items, nil
 }
 
-func (c *Client) getZSet(name string) ([]redis.Z, *ContextError) {
-	return c.getZSetRange(name, &redis.ZRangeBy{
+func (r *Redis) getZSet(name string) ([]redis.Z, *ContextError) {
+	return r.getZSetRange(name, &redis.ZRangeBy{
 		Min:    "-inf",
 		Max:    "+inf",
 		Offset: 0,
 	})
 }
 
-func (c *Client) getZSetRange(name string, rangeBy *redis.ZRangeBy) ([]redis.Z, *ContextError) {
-	result, err := c.Redis.ZRangeByScoreWithScores(ctx, name, rangeBy).Result()
+func (r *Redis) getZSetRange(name string, rangeBy *redis.ZRangeBy) ([]redis.Z, *ContextError) {
+	result, err := r.ZRangeByScoreWithScores(ctx, name, rangeBy).Result()
 
 	if err != nil {
 		return nil, NewContextError(err, []ContextParam{
@@ -204,7 +206,7 @@ func (c *Client) getZSetRange(name string, rangeBy *redis.ZRangeBy) ([]redis.Z, 
 	return result, nil
 }
 
-func (c *Client) updateVotes(submissions []*geddit.Submission) *ContextError {
+func (r *Redis) updateVotes(submissions []*geddit.Submission) *ContextError {
 	i := 0
 	updates := make([]*redis.Z, len(submissions))
 	for _, submission := range submissions {
@@ -212,7 +214,7 @@ func (c *Client) updateVotes(submissions []*geddit.Submission) *ContextError {
 		i++
 	}
 
-	if err := c.Redis.ZAdd(ctx, RedisUpvotes, updates...).Err(); err != nil {
+	if err := r.ZAdd(ctx, RedisUpvotes, updates...).Err(); err != nil {
 		return NewWrappedError("could not update submission upvotes", err, []ContextParam{
 			{"updates", fmt.Sprint(updates)},
 		})
@@ -221,12 +223,13 @@ func (c *Client) updateVotes(submissions []*geddit.Submission) *ContextError {
 	return nil
 }
 
-func (c *Client) setAnchor(anchorKey string, fullID string, epoch float64) *ContextError {
+func (r *Redis) setAnchor(anchorKey string, fullID string, epoch float64) *ContextError {
 	anchorString := fmt.Sprintf("%s:%f", fullID, epoch)
 
+	c := r.client
 	c.Logger.Infof("Setting %s to %s.", anchorKey, anchorString)
 
-	if err := c.Redis.Set(ctx, anchorKey, anchorString, 0).Err(); err != nil {
+	if err := r.Set(ctx, anchorKey, anchorString, 0).Err(); err != nil {
 		c.dfatal(NewContextError(fmt.Errorf("could not set %s: %w", anchorKey, err), []ContextParam{
 			{"Anchor String", anchorString},
 		}))
@@ -235,14 +238,14 @@ func (c *Client) setAnchor(anchorKey string, fullID string, epoch float64) *Cont
 	return nil
 }
 
-func (c *Client) setCurrentAnchor(anchorKey string, fullID string, epoch float64, isForwards bool) *ContextError {
-	err := c.setAnchor(anchorKey, fullID, epoch)
+func (r *Redis) setCurrentAnchor(anchorKey string, fullID string, epoch float64, isForwards bool) *ContextError {
+	err := r.setAnchor(anchorKey, fullID, epoch)
 	if err != nil {
 		return err
 	}
 
-	if err := c.Redis.Set(ctx, RedisSearchIsForwards, isForwards, 0).Err(); err != nil {
-		c.dfatal(NewContextlessError(fmt.Errorf("could not set %s: %w", RedisSearchIsForwards, err)))
+	if err := r.Set(ctx, RedisSearchIsForwards, isForwards, 0).Err(); err != nil {
+		r.client.dfatal(NewContextlessError(fmt.Errorf("could not set %s: %w", RedisSearchIsForwards, err)))
 	}
 
 	return nil

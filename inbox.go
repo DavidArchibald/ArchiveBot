@@ -36,14 +36,15 @@ type ListingItem struct {
 func (c *Client) ReplyToInbox() {
 	processName := "Reply To Inbox"
 
+	p := c.Processes
 	for !c.closed {
-		c.RoutineStart(processName)
+		p.RoutineStart(processName)
 		ce := c.replyToInbox()
 		if ce != nil {
 			c.dfatal(ce)
 		}
 
-		c.RoutineWait(processName)
+		p.RoutineWait(processName)
 	}
 }
 
@@ -120,14 +121,12 @@ func (c *Client) replyToComment(l ListingItem) *ContextError {
 	constants := c.Config.Constants
 	switch name {
 	case "help":
-		c.MarkAsRead([]string{l.FullID})
 		return c.HelpCommand(l, arguments)
 	case "find":
 		fallthrough
 	case "search":
 		return c.SearchCommand(l, arguments)
 	default:
-		c.MarkAsRead([]string{l.FullID})
 		return c.reply(l, fmt.Sprintf(constants.CouldNotParse+constants.HelpBody, fmt.Sprintf("Unknown command `%s`.", name)))
 	}
 }
@@ -146,7 +145,7 @@ func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError 
 		return c.reply(l, fmt.Sprint(couldNotParse, "I need more info to find you anything."))
 	}
 
-	matches := c.getTitleMatches(arguments[0])
+	matches := c.Search.getTitleMatches(arguments[0])
 	var search string
 
 	var flairArgument string
@@ -157,11 +156,12 @@ func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError 
 		flairArgument = strings.Join(arguments[1:], " ")
 	}
 
+	r := c.Redis
 	var searchResults []redis.Z
 	if search != "" {
 		var ce *ContextError
 
-		searchResults, ce = c.getZSet(RedisSearchPrefix + search)
+		searchResults, ce = r.getZSet(RedisSearchPrefix + search)
 		if ce != nil {
 			return ce
 		}
@@ -171,7 +171,7 @@ func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError 
 	if flairArgument != "" {
 		var ce *ContextError
 
-		flairs, ce = c.getZSet(RedisFlairsPrefix + flairArgument)
+		flairs, ce = r.getZSet(RedisFlairsPrefix + flairArgument)
 		if ce != nil {
 			return ce
 		}
@@ -255,6 +255,7 @@ func (c *Client) reply(l ListingItem, message string) *ContextError {
 		"thing_id": {l.FullID},
 		"text":     {message},
 	}, nil)
+
 	if ce != nil {
 		return NewWrappedError("replying to comment", ce, []ContextParam{
 			{"Author Reply", l.Author},
@@ -287,17 +288,23 @@ func (c *Client) MarkAsRead(ids []string) *ContextError {
 
 		idList := strings.Join(idBatch, ",")
 
-		// b, err := json.Marshal(RedditMarkReadPayload{idList})
-		// if err != nil {
-		// 	return NewContextlessError(err).Wrap("could not marshal Reddit mark read payload")
-		// }
-
 		_, ce := c.doRedditRequest("POST", c.makePath(RedditRouteReadMessage), url.Values{
 			"raw_json": []string{"1"},
 			"id":       []string{idList},
 		}, nil)
 		if ce != nil {
 			return ce
+		}
+
+		processed := make([]interface{}, len(idBatch))
+		for i, id := range idBatch {
+			processed[i] = id
+		}
+
+		if err := c.Redis.SAdd(ctx, RedisProcessed, processed...).Err(); err != nil {
+			return NewWrappedError("could not add processed submissions to Redis", err, []ContextParam{
+				{"IDs", fmt.Sprint(idBatch)},
+			})
 		}
 
 		ids = ids[len(idBatch):]

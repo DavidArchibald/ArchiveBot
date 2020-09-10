@@ -30,7 +30,7 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 			break
 		}
 
-		if err := client.addSubmissions(submissions); err != nil {
+		if err := client.Redis.addSubmissions(submissions); err != nil {
 			client.dfatal(err)
 			break
 		}
@@ -56,13 +56,13 @@ func analyzeSubmissions(client *Client) {
 	}
 
 	for !client.closed {
-		client.RoutineStart(processName)
+		client.Processes.RoutineStart(processName)
 		err := client.AnalyzeSubmissions(initialParams)
 
 		if err != nil {
 			client.dfatal(err)
 		}
 
-		client.RoutineWait(processName)
+		client.Processes.RoutineWait(processName)
 	}
 }

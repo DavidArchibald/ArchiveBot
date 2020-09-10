@@ -1,6 +1,6 @@
 [Application]
 production = <bool>               # In development any unexpected error will halt the application, logging is formatted, and everything is logged.
-loop_delay = "<duration>"         # The delay between iterations of each loop. Must be a positive, parseable duration, see https://golang.org/pkg/time/#ParseDuration.
+loop_delay = "<duration>"         # The delay between iterations of each loop, in addition to rate limit waits. Must be a positive, parseable duration, see https://golang.org/pkg/time/#ParseDuration.
 tick_speed = "<duration>"         # The speed at which the client updates its state. Should be small enough to react quickly and less than loop_delay.
 
 [Pushshift]

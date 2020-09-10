@@ -7,11 +7,14 @@ import (
 
 // Processes control the
 type Processes struct {
-	reserveLock sync.Locker
-	reserved    map[string]reservation
-	nextReserve map[string]reservation
-	ticker      chan struct{}
-	wg          *sync.WaitGroup
+	client        *Client
+	config        *Config
+	reserveLock   sync.Locker
+	reserved      map[string]reservation
+	nextReserve   map[string]reservation
+	ticker        *time.Ticker
+	routineTicker chan struct{}
+	wg            *sync.WaitGroup
 }
 
 // reservation holds the reserved API info calls.
@@ -22,14 +25,15 @@ type reservation struct {
 }
 
 // NewProcesses creates a structue for managing
-func NewProcesses() *Processes {
+func NewProcesses(client *Client, config *Config) *Processes {
 	var reserveLock *sync.Mutex
 	var reserved = make(map[string]reservation)
 	var nextReserve = make(map[string]reservation)
-	var ticker = make(chan struct{})
+	ticker := time.NewTicker(config.Application.TickSpeed)
+	var routineTicker = make(chan struct{})
 	wg := &sync.WaitGroup{}
 
-	return &Processes{reserveLock, reserved, nextReserve, ticker, wg}
+	return &Processes{client, config, reserveLock, reserved, nextReserve, ticker, routineTicker, wg}
 }
 
 // StartProcesses begins the process loop.
@@ -38,56 +42,64 @@ func (c *Client) StartProcesses() {
 	timer := time.NewTicker(c.Config.Application.LoopDelay)
 	go func() {
 		for !c.closed {
-			p.ticker <- struct{}{}
+			p.routineTicker <- struct{}{}
 			p.wg.Wait()
 
 			// The timer can be cancelled using this method, but should otherwise be equivalent to time.Sleep(...)
 			timer.Reset(c.Config.Application.LoopDelay)
 			<-timer.C
+
+			for !c.closed && !c.Reddit.IsRateLimited() {
+				<-p.Tick()
+			}
 		}
 	}()
 
-	checker := time.NewTicker(time.Second)
 	for !c.closed {
-		<-checker.C
+		<-p.Tick()
 	}
 
-	checker.Stop()
-	<-checker.C
+	p.ticker.Stop()
+	<-p.Tick()
 
 	timer.Reset(0)
 	<-timer.C
 
-	<-p.ticker
-	close(p.ticker)
+	<-p.routineTicker
+	close(p.routineTicker)
 }
 
 // CloseProcesses closes the process loop.
-func (c *Client) CloseProcesses() {
-	c.closed = true
-	<-c.Processes.ticker
-	close(c.Processes.ticker)
+func (p *Processes) CloseProcesses() {
+	p.client.closed = true
+	<-p.routineTicker
+	close(p.routineTicker)
 }
 
 // RoutineStart will begin a routine.
-func (c *Client) RoutineStart(name string) {
+func (p *Processes) RoutineStart(name string) {
 
 }
 
 // RoutineWait will block until the process may continue.
-func (c *Client) RoutineWait(name string) {
-	<-c.Processes.ticker
+func (p *Processes) RoutineWait(name string) {
+	<-p.routineTicker
 }
 
 // RoutineCrash will handle a routine crashing.
-func (c *Client) RoutineCrash(name string) {
+func (p *Processes) RoutineCrash(name string) {
 	if err := recover(); err != nil {
-		c.dpanic(err)
+		p.client.dpanic(err)
 	}
 }
 
 // ReserveNextLoop is.
-func (c *Client) ReserveNextLoop(name string, reservation uint64, buffer uint64) {}
+func (p *Processes) ReserveNextLoop(name string, reservation uint64, buffer uint64) {}
 
 // Release will release any held limits
-func (c *Client) Release(name string) {}
+func (p *Processes) Release(name string) {}
+
+// Tick returns the ticker for the tick speed.
+func (p *Processes) Tick() <-chan time.Time {
+	return p.ticker.C
+}

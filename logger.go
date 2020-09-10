@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// NewLogger .
+// NewLogger creates a formatted logger to make it easier to read.
 func NewLogger(isProduction bool) (*zap.SugaredLogger, error) {
 	var (
 		config zap.Config
@@ -104,10 +104,11 @@ func (c *Client) dpanic(v interface{}) {
 
 // ContextError is an error with additional debugging context.
 type ContextError struct {
-	context     []ContextParam
-	contextKeys map[string]struct{}
-	history     []ContextError
-	err         error
+	context      []ContextParam
+	contextKeys  map[string]struct{}
+	history      []ContextError
+	combinedWith []ContextError
+	err          error
 }
 
 // ContextParam is a contextual parameter.
@@ -120,7 +121,7 @@ var _ error = &ContextError{}
 
 // NewContextlessError creates a ContextError with no context. This is essentially a no-op.
 func NewContextlessError(err error) *ContextError {
-	return &ContextError{[]ContextParam{}, make(map[string]struct{}), nil, err}
+	return &ContextError{[]ContextParam{}, make(map[string]struct{}), nil, nil, err}
 }
 
 // NewWrappedError wraps the error and then adds context.
@@ -135,7 +136,7 @@ func NewWrappedError(wrap string, err error, context []ContextParam) *ContextErr
 func NewContextError(err error, context []ContextParam) *ContextError {
 	if ce, ok := err.(*ContextError); ok {
 		if ce == nil {
-			return &ContextError{context, make(map[string]struct{}), nil, err}
+			return &ContextError{context, make(map[string]struct{}), nil, nil, err}
 		}
 
 		temp := *ce
@@ -173,7 +174,7 @@ func NewContextError(err error, context []ContextParam) *ContextError {
 		contextKeys[param.key] = struct{}{}
 	}
 
-	return &ContextError{context, contextKeys, nil, err}
+	return &ContextError{context, contextKeys, nil, nil, err}
 }
 
 // AddContext to an error.

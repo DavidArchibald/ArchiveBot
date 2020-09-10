@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jzelinskie/geddit"
 )
@@ -25,9 +28,30 @@ type RedditConfig struct {
 
 // Reddit is the structure for Reddit.
 type Reddit struct {
+	client        *Client
 	sessionCookie *http.Cookie
 	modhash       string
-	config        RedditConfig
+	lock          sync.Locker
+	rateLimit     *Limiter
+}
+
+// Limiter limits how often a can occur.
+type Limiter struct {
+	currentRateLimit *RateLimit
+	rateLimitDone    chan struct{}
+}
+
+// RateLimit is a rate limit returned by Reddit.
+type RateLimit struct {
+	time      time.Time
+	used      int
+	remaining int
+	reset     int
+	resetTime time.Time
+}
+
+func (r *RateLimit) String() string {
+	return fmt.Sprintf("used: %d, remaining: %d, reset: %d", r.used, r.remaining, r.reset)
 }
 
 // SubmissionData is the data Reddit's submission listing returns.
@@ -64,11 +88,11 @@ const RedditRouteReadMessage = "/api/read_message"
 const RedditRouteComments = "/comments"
 
 // NewRedditClient creates a new Reddit client.
-func NewRedditClient(config RedditConfig) (*Reddit, error) {
+func NewRedditClient(client *Client, config *Config) (*Reddit, error) {
 	// A copy and paste from geddit.NewLoginSession to expose its values.
 
-	username := config.Username
-	password := config.Password
+	username := config.Reddit.Username
+	password := config.Reddit.Password
 
 	loginURL := fmt.Sprintf("https://www.reddit.com/api/login/%s", username)
 	postValues := url.Values{
@@ -82,7 +106,7 @@ func NewRedditClient(config RedditConfig) (*Reddit, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", config.UserAgent)
+	req.Header.Set("User-Agent", config.Reddit.UserAgent)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -126,7 +150,10 @@ func NewRedditClient(config RedditConfig) (*Reddit, error) {
 		return nil, errors.New(strings.Join(msg, ", "))
 	}
 
-	return &Reddit{sessionCookie, r.JSON.Data.Modhash, config}, nil
+	ticker := make(chan struct{}, 1)
+	limiter := &Limiter{nil, ticker}
+
+	return &Reddit{client, sessionCookie, r.JSON.Data.Modhash, &sync.Mutex{}, limiter}, nil
 }
 
 // func authenticateInBrowser() {
@@ -140,7 +167,9 @@ func NewRedditClient(config RedditConfig) (*Reddit, error) {
 // 	http.ListenAndServe()
 // }
 
-func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsResponse, *ContextError) {
+func (r *Reddit) getSubmissions(params geddit.ListingOptions) (*SubmissionsResponse, *ContextError) {
+	c := r.client
+
 	isForwards := true // Synonymous with using after
 	searchDescriptor := ""
 	if params.Before != "" && params.After != "" {
@@ -176,14 +205,14 @@ func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 		return nil, ce
 	}
 
-	r := new(SubmissionData)
-	if err := json.Unmarshal(resp, r); err != nil {
+	data := new(SubmissionData)
+	if err := json.Unmarshal(resp, data); err != nil {
 		return nil, NewWrappedError("could not read response", err, []ContextParam{
 			{"resp", fmt.Sprint(resp)},
 		})
 	}
 
-	submissions, err := c.checkSubmissions(r, isForwards)
+	submissions, err := c.checkSubmissions(data, isForwards)
 	if err != nil {
 		return nil, NewContextlessError(err).Wrap("could not check submissions")
 	}
@@ -192,16 +221,99 @@ func (c *Client) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 	*next = params
 	next.Count += len(submissions)
 	if params.Before != "" {
-		next.Before = r.Data.Before
+		next.Before = data.Data.Before
 		if next.Before == "" {
 			next = nil
 		}
 	} else {
-		next.After = r.Data.After
+		next.After = data.Data.After
 		if next.After == "" {
 			next = nil
 		}
 	}
 
 	return &SubmissionsResponse{submissions, next}, nil
+}
+
+// NewRateLimit constructs a rate limit from a response.
+func (r *Reddit) NewRateLimit(resp *http.Response) (*RateLimit, *ContextError) {
+	headers := [...]string{"X-Ratelimit-Used", "X-Ratelimit-Remaining", "X-Ratelimit-Reset"}
+	headerInts := [...]int{0, 0, 0}
+
+	for i, header := range headers {
+		headerString := resp.Header.Get(header)
+		headerInt, err := strconv.Atoi(headerString)
+		if err != nil {
+			return nil, NewWrappedError("could not parse rate limit header", err, []ContextParam{
+				{header, headerString},
+				{"All Headers", fmt.Sprint(resp.Header)},
+			})
+		}
+
+		headerInts[i] = headerInt
+	}
+
+	now := time.Now()
+	used, remaining, reset := headerInts[0], headerInts[1], headerInts[2]
+	resetTime := now.Add(time.Duration(reset) * time.Second)
+
+	return &RateLimit{now, used, remaining, reset, resetTime}, nil
+}
+
+// SetRateLimit sets the rate limit if it is newer than the currently set one.
+func (r *Reddit) SetRateLimit(newLimit *RateLimit) {
+	c := r.client
+
+	c.Reddit.lock.Lock()
+	defer c.Reddit.lock.Unlock()
+
+	currentLimit := c.Reddit.RateLimit()
+	if currentLimit == nil {
+		c.Logger.Infof("First rate limit: %s", newLimit)
+		c.Reddit.rateLimit.currentRateLimit = newLimit
+		return
+	}
+
+	if currentLimit.time.Before(newLimit.time) {
+		c.Reddit.rateLimit.currentRateLimit = newLimit
+	} else {
+		return
+	}
+
+	if newLimit.remaining == 0 {
+		c.Logger.Infof("Used all limits approximately %d seconds until reset.", currentLimit.reset)
+	}
+
+	if currentLimit.remaining == 0 && newLimit.remaining != 0 {
+		givenDuration := time.Duration(currentLimit.reset)
+		realDuration := time.Now().Sub(currentLimit.time)
+		difference := givenDuration - realDuration
+
+		if difference > -1 && difference < 1 {
+			c.Logger.Infof("Limits reset after %v.", realDuration)
+		} else {
+			c.Logger.Infof("Limits reset after %v (expected %v).", realDuration, givenDuration)
+		}
+	}
+}
+
+// RateLimit gets a copy of the rate limit.
+func (r *Reddit) RateLimit() *RateLimit {
+	if r.rateLimit == nil || r.rateLimit.currentRateLimit == nil {
+		return nil
+	}
+
+	currentLimit := &RateLimit{}
+	*currentLimit = *r.rateLimit.currentRateLimit
+
+	return currentLimit
+}
+
+// IsRateLimited checks to see if the process is rate limited.
+func (r *Reddit) IsRateLimited() bool {
+	if r.rateLimit == nil || r.rateLimit.currentRateLimit != nil {
+		return false
+	}
+
+	return time.Now().Before(r.rateLimit.currentRateLimit.resetTime)
 }
