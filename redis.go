@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/jzelinskie/geddit"
+	"github.com/vartanbeno/go-reddit/reddit"
 )
 
 // Reddit Search anchors.
@@ -206,11 +206,11 @@ func (r *Redis) getZSetRange(name string, rangeBy *redis.ZRangeBy) ([]redis.Z, *
 	return result, nil
 }
 
-func (r *Redis) updateVotes(submissions []*geddit.Submission) *ContextError {
+func (r *Redis) updateVotes(submissions []*reddit.Post) *ContextError {
 	i := 0
 	updates := make([]*redis.Z, len(submissions))
 	for _, submission := range submissions {
-		updates[i] = &redis.Z{Score: float64(submission.Ups), Member: submission.ID}
+		updates[i] = &redis.Z{Score: float64(submission.Score), Member: submission.ID}
 		i++
 	}
 
@@ -223,8 +223,8 @@ func (r *Redis) updateVotes(submissions []*geddit.Submission) *ContextError {
 	return nil
 }
 
-func (r *Redis) setAnchor(anchorKey string, fullID string, epoch float64) *ContextError {
-	anchorString := fmt.Sprintf("%s:%f", fullID, epoch)
+func (r *Redis) setAnchor(anchorKey string, fullID string, timestamp reddit.Timestamp) *ContextError {
+	anchorString := fmt.Sprintf("%s:%d", fullID, timestamp.Unix())
 
 	c := r.client
 	c.Logger.Infof("Setting %s to %s.", anchorKey, anchorString)
@@ -238,8 +238,8 @@ func (r *Redis) setAnchor(anchorKey string, fullID string, epoch float64) *Conte
 	return nil
 }
 
-func (r *Redis) setCurrentAnchor(anchorKey string, fullID string, epoch float64, isForwards bool) *ContextError {
-	err := r.setAnchor(anchorKey, fullID, epoch)
+func (r *Redis) setCurrentAnchor(anchorKey string, fullID string, timestamp reddit.Timestamp, isForwards bool) *ContextError {
+	err := r.setAnchor(anchorKey, fullID, timestamp)
 	if err != nil {
 		return err
 	}

@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/jzelinskie/geddit"
+	"github.com/vartanbeno/go-reddit/reddit"
 )
 
 // RedditMarkReadBatch is the number of comments that Reddit allows to be read at once.
@@ -29,7 +27,7 @@ type Listing struct {
 // ListingItem is the combined information of different listing kinds.
 type ListingItem struct {
 	Body string `json:"body"`
-	*geddit.Submission
+	*reddit.Post
 }
 
 // ReplyToInbox checks the inbox and replies to mentions.
@@ -53,40 +51,28 @@ func (c *Client) replyToInbox() *ContextError {
 
 	c.Logger.Infof("Reading inbox")
 
-	requestURL := c.makePath(RedditRouteMessageUnread + RedditJSONSuffix)
-	b, ce := c.doRedditGetRequest(requestURL, url.Values{
-		"limit":    []string{"100"},
-		"raw_json": []string{"1"},
+	comments, _, _, err := c.Reddit.Message.InboxUnread(ctx, &reddit.ListOptions{
+		Limit: 100,
 	})
-	if ce != nil {
-		return ce
-	}
-
-	listing := &Listing{}
-	err := json.Unmarshal(b, listing)
 	if err != nil {
-		return NewContextError(err, []ContextParam{
-			{"Request URL", requestURL},
-			{"Request Body", string(b)},
-		})
+		return NewContextlessError(err)
 	}
 
-	if len(listing.Data.Children) == 0 {
-		c.Logger.Info("No new messages.")
+	if len(comments.Messages) == 0 {
+		c.Logger.Info("No new comments.")
 	}
 
 	var read []string
-	for _, item := range listing.Data.Children {
-		data := item.Data
-		if strings.Contains(data.Body, "u/"+c.Config.Reddit.Username) {
-			err := c.replyToComment(data)
+	for _, item := range comments.Messages {
+		if strings.Contains(item.Text, "u/"+c.Config.Reddit.Username) {
+			err := c.replyToComment(item)
 			if err != nil {
 				c.dfatal(err)
 				continue
 			}
-			read = append(read, data.FullID)
+			read = append(read, item.FullID)
 		} else {
-			c.Logger.Infof("Not a mention, skipping processing message (ID: %s).\nBody: %s", data.FullID, data.Body)
+			c.Logger.Infof("Not a mention, skipping processing message (ID: %s).\nBody: %s", item.FullID, item.Text)
 		}
 	}
 
@@ -96,23 +82,21 @@ func (c *Client) replyToInbox() *ContextError {
 // ErrCouldNotParse is the error given when a reply can't be parsed.
 var ErrCouldNotParse = errors.New("Could not parse")
 
-func (c *Client) replyToComment(l ListingItem) *ContextError {
-	body := strings.TrimPrefix(l.Body, "/")
-	mention := "u/" + c.Config.Reddit.Username + " "
-
-	notParse := c.Config.Constants.CouldNotParse + c.Config.Constants.Footer
-	if !strings.HasPrefix(body, mention) {
+func (c *Client) replyToComment(l *reddit.Message) *ContextError {
+	parts := strings.SplitN(l.Text, "u/"+c.Config.Reddit.Username, 2)
+	if len(parts) == 1 {
+		notParse := c.Config.Constants.CouldNotParse + c.Config.Constants.Footer
 		c.reply(l, notParse)
+		c.Logger.DPanic("Message has no mention in it!")
 		return NewContextError(ErrCouldNotParse, []ContextParam{
 			{"Reply Author", l.Author},
 			{"Reply ID", l.FullID},
-			{"Reply Link", l.Permalink},
-			{"Reply Message", l.Body},
+			{"Reply Text", l.Text},
 		})
 	}
 
-	body = body[len(mention):]
-	fields := strings.Fields(body)
+	mentionLine := parts[1]
+	fields := strings.Fields(mentionLine)
 
 	name := strings.ToLower(fields[0])
 
@@ -132,17 +116,17 @@ func (c *Client) replyToComment(l ListingItem) *ContextError {
 }
 
 // HelpCommand is the .
-func (c *Client) HelpCommand(l ListingItem, arguments []string) *ContextError {
+func (c *Client) HelpCommand(m *reddit.Message, arguments []string) *ContextError {
 	constants := c.Config.Constants
-	return c.reply(l, constants.HelpStart+constants.HelpBody)
+	return c.reply(m, constants.HelpStart+constants.HelpBody)
 }
 
 // SearchCommand is the command to search through search terms.
-func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError {
+func (c *Client) SearchCommand(m *reddit.Message, arguments []string) *ContextError {
 	constants := c.Config.Constants
 	couldNotParse := constants.CouldNotParse + constants.HelpBody
 	if len(arguments) == 0 {
-		return c.reply(l, fmt.Sprint(couldNotParse, "I need more info to find you anything."))
+		return c.reply(m, fmt.Sprint(couldNotParse, "I need more info to find you anything."))
 	}
 
 	matches := c.Search.getTitleMatches(arguments[0])
@@ -211,12 +195,12 @@ func (c *Client) SearchCommand(l ListingItem, arguments []string) *ContextError 
 	argumentString := strings.Join(arguments, " ")
 	if len(links) == 0 {
 		noResults := fmt.Sprintf(constants.NoResults, argumentString)
-		return c.reply(l, noResults)
+		return c.reply(m, noResults)
 	}
 
 	allLinks := strings.Join(links, "\n\n")
 	foundResults := fmt.Sprintf(constants.FoundResults+"\n\n", argumentString)
-	return c.reply(l, foundResults+allLinks+constants.Footer)
+	return c.reply(m, foundResults+allLinks+constants.Footer)
 }
 
 // ZIntersect gets the intersection of two sorted sets.
@@ -238,28 +222,25 @@ func (c *Client) ZIntersect(a []redis.Z, b []redis.Z) []redis.Z {
 	keys := make([]redis.Z, len(smaller))
 	for _, item := range larger {
 		if _, ok := baseSet[item]; ok {
-			keys[i] = item
-			i++
-
 			if i >= len(smaller) {
 				break
 			}
+
+			keys[i] = item
+			i++
 		}
 	}
 
 	return keys
 }
 
-func (c *Client) reply(l ListingItem, message string) *ContextError {
-	_, ce := c.doRedditRequest("POST", c.makePath("/api/comment"), url.Values{
-		"thing_id": {l.FullID},
-		"text":     {message},
-	}, nil)
+func (c *Client) reply(m *reddit.Message, message string) *ContextError {
+	_, _, err := c.Reddit.Comment.Submit(ctx, m.FullID, message)
 
-	if ce != nil {
-		return NewWrappedError("replying to comment", ce, []ContextParam{
-			{"Author Reply", l.Author},
-			{"Comment ID", l.FullID},
+	if err != nil {
+		return NewWrappedError("replying to comment", err, []ContextParam{
+			{"Author Reply", m.Author},
+			{"Comment ID", m.FullID},
 			{"Body", message},
 		})
 	}
@@ -286,14 +267,11 @@ func (c *Client) MarkAsRead(ids []string) *ContextError {
 			c.Logger.Infof("Marking ids: %v as read.", idBatch)
 		}
 
-		idList := strings.Join(idBatch, ",")
-
-		_, ce := c.doRedditRequest("POST", c.makePath(RedditRouteReadMessage), url.Values{
-			"raw_json": []string{"1"},
-			"id":       []string{idList},
-		}, nil)
-		if ce != nil {
-			return ce
+		_, err := c.Reddit.Message.Read(ctx, idBatch...)
+		if err != nil {
+			return NewWrappedError("setting message read", err, []ContextParam{
+				{"ids", fmt.Sprint(idBatch)},
+			})
 		}
 
 		processed := make([]interface{}, len(idBatch))

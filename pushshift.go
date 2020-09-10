@@ -32,7 +32,7 @@ type PushshiftSubmission struct {
 }
 
 // PushshiftFields are the extracted fields of a submission.
-// geddit.Submission is not necessarily guaranteed to match and so is not used.
+// reddit.Submission is not necessarily guaranteed to match and so is not used.
 type PushshiftFields struct {
 	Permalink     string  `json:"permalink"`
 	ID            string  `json:"id"`

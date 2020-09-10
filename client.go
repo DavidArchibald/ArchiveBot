@@ -66,10 +66,10 @@ func NewClient(configPath string) *Client {
 func (c *Client) Close() {
 	c.Redis.Close()
 	c.Logger.Sync()
-	c.CloseProcesses()
+	c.Processes.Close()
 }
 
 // Run is used to control the event loop until the client closes.
 func (c *Client) Run() {
-	c.StartProcesses()
+	c.Processes.Start()
 }

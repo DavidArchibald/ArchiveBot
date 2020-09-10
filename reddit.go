@@ -1,17 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/jzelinskie/geddit"
+	"github.com/vartanbeno/go-reddit/reddit"
 )
 
 // RedditConfig is the toml configuration for Reddit.
@@ -28,11 +25,11 @@ type RedditConfig struct {
 
 // Reddit is the structure for Reddit.
 type Reddit struct {
-	client        *Client
-	sessionCookie *http.Cookie
-	modhash       string
-	lock          sync.Locker
-	rateLimit     *Limiter
+	*reddit.Client
+	http      *http.Client
+	client    *Client
+	lock      sync.Locker
+	rateLimit *Limiter
 }
 
 // Limiter limits how often a can occur.
@@ -54,12 +51,12 @@ func (r *RateLimit) String() string {
 	return fmt.Sprintf("used: %d, remaining: %d, reset: %d", r.used, r.remaining, r.reset)
 }
 
-// SubmissionData is the data Reddit's submission listing returns.
+// SubmissionData is the data Reddit's post listing returns.
 // A blank before, after, and zero children means either the post is deleted or the only one in the subreddit.
 type SubmissionData struct {
 	Data struct {
 		Children []struct {
-			Data *geddit.Submission
+			Data *reddit.Post
 		}
 		Before string `json:"before"`
 		After  string `json:"after"`
@@ -68,92 +65,32 @@ type SubmissionData struct {
 
 // SubmissionsResponse is the response of a submission listing.
 type SubmissionsResponse struct {
-	Submissions []*geddit.Submission
-	Next        *geddit.ListingOptions
+	Submissions []*reddit.Post
+	Next        *reddit.ListOptions
 }
 
 // RedditSubredditPrefix is the prefix of a subreddit's name.
 const RedditSubredditPrefix = "/r/"
 
-// RedditJSONSuffix makes sure Reddit replies using JSON.
-const RedditJSONSuffix = ".json"
-
-// RedditRouteMessageUnread is for unread messages in your inbox.
-const RedditRouteMessageUnread = "/message/unread"
-
-// RedditRouteReadMessage is for marking messages in your inbox as read.
-const RedditRouteReadMessage = "/api/read_message"
-
-// RedditRouteComments is the route for getting comments.
-const RedditRouteComments = "/comments"
-
 // NewRedditClient creates a new Reddit client.
 func NewRedditClient(client *Client, config *Config) (*Reddit, error) {
-	// A copy and paste from geddit.NewLoginSession to expose its values.
+	h := &http.Client{}
 
-	username := config.Reddit.Username
-	password := config.Reddit.Password
+	r, err := reddit.NewClient(h, &reddit.Credentials{
+		ID:       config.Reddit.ClientID,
+		Secret:   config.Reddit.ClientSecret,
+		Username: config.Reddit.Username,
+		Password: config.Reddit.Password,
+	})
 
-	loginURL := fmt.Sprintf("https://www.reddit.com/api/login/%s", username)
-	postValues := url.Values{
-		"user":     {username},
-		"passwd":   {password},
-		"api_type": {"json"},
-	}
-
-	req, err := http.NewRequest("POST", loginURL, strings.NewReader(postValues.Encode()))
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", config.Reddit.UserAgent)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New(resp.Status)
-	}
-
-	var sessionCookie *http.Cookie
-	// Get the session cookie.
-	for _, cookie := range resp.Cookies() {
-		if cookie.Name == "reddit_session" {
-			sessionCookie = cookie
-		}
-	}
-
-	// Get the modhash from the JSON.
-	type Response struct {
-		JSON struct {
-			Errors [][]string
-			Data   struct {
-				Modhash string
-			}
-		}
-	}
-
-	r := &Response{}
-	err = json.NewDecoder(resp.Body).Decode(r)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(r.JSON.Errors) != 0 {
-		var msg []string
-		for _, k := range r.JSON.Errors {
-			msg = append(msg, k[1])
-		}
-		return nil, errors.New(strings.Join(msg, ", "))
 	}
 
 	ticker := make(chan struct{}, 1)
 	limiter := &Limiter{nil, ticker}
 
-	return &Reddit{client, sessionCookie, r.JSON.Data.Modhash, &sync.Mutex{}, limiter}, nil
+	return &Reddit{r, h, client, &sync.Mutex{}, limiter}, nil
 }
 
 // func authenticateInBrowser() {
@@ -167,7 +104,7 @@ func NewRedditClient(client *Client, config *Config) (*Reddit, error) {
 // 	http.ListenAndServe()
 // }
 
-func (r *Reddit) getSubmissions(params geddit.ListingOptions) (*SubmissionsResponse, *ContextError) {
+func (r *Reddit) getSubmissions(params reddit.ListOptions) (*SubmissionsResponse, *ContextError) {
 	c := r.client
 
 	isForwards := true // Synonymous with using after
@@ -188,51 +125,32 @@ func (r *Reddit) getSubmissions(params geddit.ListingOptions) (*SubmissionsRespo
 	}
 
 	c.Logger.Infof("Reading submissions %s.", searchDescriptor)
-	baseURL := c.makePath(RedditSubredditPrefix, c.Config.Subreddit.Name)
-	route := fmt.Sprintf("%s/%s.json", baseURL, geddit.NewSubmissions)
-
-	resp, ce := c.doRedditGetRequest(route, url.Values{
-		"t":        []string{params.Time},
-		"limit":    []string{fmt.Sprint(params.Limit)},
-		"after":    []string{params.After},
-		"before":   []string{params.After},
-		"count":    []string{fmt.Sprint(params.Count)},
-		"show":     []string{params.Show},
-		"article":  []string{params.Article},
-		"raw_json": []string{"1"},
+	posts, _, err := r.Subreddit.NewPosts(ctx, c.Config.Subreddit.Name, &reddit.ListOptions{
+		Limit:  c.Config.Reddit.SearchLimit,
+		After:  params.After,
+		Before: params.Before,
 	})
-	if ce != nil {
-		return nil, ce
-	}
 
-	data := new(SubmissionData)
-	if err := json.Unmarshal(resp, data); err != nil {
-		return nil, NewWrappedError("could not read response", err, []ContextParam{
-			{"resp", fmt.Sprint(resp)},
-		})
-	}
-
-	submissions, err := c.checkSubmissions(data, isForwards)
+	err = c.checkSubmissions(posts, isForwards)
 	if err != nil {
 		return nil, NewContextlessError(err).Wrap("could not check submissions")
 	}
 
-	next := &geddit.ListingOptions{}
+	next := &reddit.ListOptions{}
 	*next = params
-	next.Count += len(submissions)
 	if params.Before != "" {
-		next.Before = data.Data.Before
+		next.Before = posts.Before
 		if next.Before == "" {
 			next = nil
 		}
 	} else {
-		next.After = data.Data.After
+		next.After = posts.After
 		if next.After == "" {
 			next = nil
 		}
 	}
 
-	return &SubmissionsResponse{submissions, next}, nil
+	return &SubmissionsResponse{posts.Posts, next}, nil
 }
 
 // NewRateLimit constructs a rate limit from a response.

@@ -36,9 +36,9 @@ func NewProcesses(client *Client, config *Config) *Processes {
 	return &Processes{client, config, reserveLock, reserved, nextReserve, ticker, routineTicker, wg}
 }
 
-// StartProcesses begins the process loop.
-func (c *Client) StartProcesses() {
-	p := c.Processes
+// Start begins the process loop.
+func (p *Processes) Start() {
+	c := p.client
 	timer := time.NewTicker(c.Config.Application.LoopDelay)
 	go func() {
 		for !c.closed {
@@ -69,8 +69,8 @@ func (c *Client) StartProcesses() {
 	close(p.routineTicker)
 }
 
-// CloseProcesses closes the process loop.
-func (p *Processes) CloseProcesses() {
+// Close closes the process loop.
+func (p *Processes) Close() {
 	p.client.closed = true
 	<-p.routineTicker
 	close(p.routineTicker)

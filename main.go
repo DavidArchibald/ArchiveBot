@@ -1,8 +1,6 @@
 package main
 
-import (
-	"github.com/jzelinskie/geddit"
-)
+import "github.com/vartanbeno/go-reddit/reddit"
 
 func main() {
 	client := NewClient("config.toml")
@@ -50,9 +48,8 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 func analyzeSubmissions(client *Client) {
 	processName := "Analyze Submissions"
 
-	initialParams := geddit.ListingOptions{
+	initialParams := reddit.ListOptions{
 		Limit: client.Config.Reddit.SearchLimit,
-		Show:  "all",
 	}
 
 	for !client.closed {

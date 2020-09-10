@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,12 +12,12 @@ import (
 	"strings"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/jzelinskie/geddit"
+	"github.com/vartanbeno/go-reddit/reddit"
 )
 
 // AnalyzeSubmissions analyzes Reddit submissions.
 // The parameters Before, After, and Count params are handled in AnalyzeSubmissions.
-func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *ContextError {
+func (c Client) AnalyzeSubmissions(initialParams reddit.ListOptions) *ContextError {
 	submissions, err := c.Redis.getHashMap(RedisSubmissions)
 	if err != nil {
 		if !c.IsProduction {
@@ -58,7 +57,7 @@ func (c Client) AnalyzeSubmissions(initialParams geddit.ListingOptions) *Context
 	return nil
 }
 
-func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, params geddit.ListingOptions) (map[string]string, *ContextError) {
+func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, params reddit.ListOptions) (map[string]string, *ContextError) {
 	currentAnchor, ce := c.Redis.getAnchor(RedisSearchCurrent)
 	if ce != nil {
 		if ce.Unwrap().Error() != redis.Nil.Error() {
@@ -83,6 +82,7 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 
 	totalSubmissions := 0
 	for {
+		c.Reddit.Listings.GetPosts(ctx)
 		r, err := c.Reddit.getSubmissions(params)
 		if err != nil {
 			return submissionsMap, err
@@ -116,120 +116,73 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 	return submissionsMap, nil
 }
 
-func (c *Client) checkSubmissions(data *SubmissionData, isForwards bool) ([]*geddit.Submission, error) {
-	submissions := make([]*geddit.Submission, len(data.Data.Children))
-	for i, child := range data.Data.Children {
-		submissions[i] = child.Data
-	}
-
+func (c *Client) checkSubmissions(posts *reddit.Posts, isForwards bool) error {
 	// EDGE CASE: How to deal with <3 submissions?
-	if len(submissions) == 0 {
+	if len(posts.Posts) == 0 {
 		// If you have reached the beginning or the end and are searching in that direction nothing to do.
-		if (data.Data.After == "" && isForwards) || (data.Data.Before == "" && !isForwards) {
-			return submissions, nil
+		if (posts.After == "" && isForwards) || (posts.Before == "" && !isForwards) {
+			return nil
 		}
 	}
 
 	r := c.Redis
+	var currentSubmission *reddit.Post
 	if isForwards {
-		lastSubmission := submissions[len(submissions)-1]
-		if c.Search.End == nil || lastSubmission.DateCreated < c.Search.End.Epoch {
-			if ce := r.setAnchor(RedisSearchEnd, lastSubmission.FullID, lastSubmission.DateCreated); ce != nil {
+		lastSubmission := posts.Posts[len(posts.Posts)-1]
+		if lastSubmission.Created != nil {
+			c.Logger.Info("Time created not given for submission ID: %s (permalink: %s)", lastSubmission.FullID, lastSubmission.Permalink)
+		} else if c.Search.End == nil || lastSubmission.Created.Before(c.Search.End.Epoch) {
+			if ce := r.setAnchor(RedisSearchEnd, lastSubmission.FullID, *lastSubmission.Created); ce != nil {
 				c.dfatal(ce)
 			}
 		}
+
+		currentSubmission = lastSubmission
 	} else {
-		firstSubmission := submissions[0]
-		if c.Search.Start == nil || firstSubmission.DateCreated > c.Search.Start.Epoch {
-			if ce := r.setAnchor(RedisSearchStart, firstSubmission.FullID, firstSubmission.DateCreated); ce != nil {
+		firstSubmission := posts.Posts[0]
+		if firstSubmission.Created == nil {
+			c.Logger.Info("Time created not given for submission ID: %s (permalink: %s)", firstSubmission.FullID, firstSubmission.Permalink)
+		} else if c.Search.Start == nil || !c.Search.Start.Epoch.Before(*firstSubmission.Created) {
+			if ce := r.setAnchor(RedisSearchStart, firstSubmission.FullID, *firstSubmission.Created); ce != nil {
 				c.dfatal(ce)
 			}
 		}
+
+		currentSubmission = firstSubmission
 	}
 
-	lastSubmission := submissions[len(submissions)-1]
-	if ce := r.setCurrentAnchor(RedisSearchCurrent, lastSubmission.FullID, lastSubmission.DateCreated, isForwards); ce != nil {
-		c.dfatal(ce)
+	if currentSubmission.Created != nil {
+		if ce := r.setCurrentAnchor(RedisSearchCurrent, currentSubmission.FullID, *currentSubmission.Created, isForwards); ce != nil {
+			c.dfatal(ce)
+		}
 	}
 
-	return submissions, nil
+	return nil
 }
 
-func (c *Client) getSubmission(id string) (*geddit.Submission, *ContextError) {
-	c.Logger.Infof("Processing submission %s", id)
-	apiURL := c.makePath(RedditRouteComments, id+RedditJSONSuffix)
-
-	b, err := c.doRedditGetRequest(apiURL, url.Values{
-		"raw_json": []string{"1"},
-	})
-	if err != nil {
-		return nil, NewWrappedError("could not get submission", err, []ContextParam{
-			{"requestURL", apiURL},
-		})
-	}
-
-	var comments []json.RawMessage
-	if err := json.Unmarshal(b, &comments); err != nil {
-		return nil, NewWrappedError("request unmarshalling", err, []ContextParam{
-			{"requestURL", apiURL},
-			{"responseData", fmt.Sprintf(`"%s"`, b)},
-		})
-	}
-
-	if len(comments) == 0 {
-		return nil, NewContextError(errors.New("no comments in data"), []ContextParam{
-			{"requestURL", apiURL},
-			{"responseData", fmt.Sprintf(`"%s"`, b)},
-		})
-	}
-
-	submission := &geddit.Submission{}
-	if err := json.Unmarshal(comments[0], submission); err != nil {
-		return nil, NewContextError(errors.New("can't parse submission"), []ContextParam{
-			{"requestURL", apiURL},
-			{"commentData", fmt.Sprintf(`"%s"`, comments[0])},
-		})
-	}
-
-	return submission, nil
-}
-
-func (c *Client) makePath(parts ...string) string {
+func (c *Client) makePath(route string, query url.Values) string {
 	u, err := url.Parse(c.Config.Reddit.URL)
 	if err != nil {
 		panic(fmt.Errorf("invalid API URL: %s", c.Config.Reddit.URL))
 	}
 
-	parts = append(parts, u.Path)
-	u.Path = path.Join(parts...)
+	u.Path = path.Join(u.Path, route)
+	u.RawQuery = query.Encode()
 
 	return u.String()
 }
 
-func (c *Client) doRedditGetRequest(route string, query url.Values) ([]byte, *ContextError) {
-	return c.doRedditRequest("GET", route, query, nil)
+func (c *Client) makePaths(parts []string, query url.Values) string {
+	return c.makePath(path.Join(parts...), query)
 }
 
-func (c *Client) doRedditRequest(method, route string, query url.Values, body io.Reader) ([]byte, *ContextError) {
-	if query == nil {
-		query = make(url.Values)
+func (c *Client) doRedditRequest(req *http.Request, v interface{}) (*reddit.Response, *ContextError) {
+	resp, err := c.Reddit.Do(ctx, req, v)
+	if err != nil {
+		return nil, NewContextlessError(err)
 	}
 
-	query.Add("uh", c.Reddit.modhash)
-
-	// now := time.Now()
-	// if !now.After(c.Reddit.rateLimit.resetTime) {
-	// 	<-c.Reddit.
-	// }
-
-	// c.Reddit.lock
-
-	return c.doRequest(
-		method, route+"?"+query.Encode(), body, http.Header{
-			"User-Agent": []string{c.Config.Reddit.UserAgent},
-			"Cookie":     []string{c.Reddit.sessionCookie.String()},
-		},
-	)
+	return resp, nil
 }
 
 func (c *Client) doRequest(method, url string, body io.Reader, header http.Header) ([]byte, *ContextError) {
@@ -318,7 +271,7 @@ func (c *Client) doRateLimit(resp *http.Response) *ContextError {
 // Anchor represents a place in the search.
 type Anchor struct {
 	FullID string
-	Epoch  float64
+	Epoch  reddit.Timestamp
 }
 
 func (r *Redis) getAnchor(anchorKey string) (*Anchor, *ContextError) {
@@ -344,15 +297,15 @@ func (r *Redis) getAnchor(anchorKey string) (*Anchor, *ContextError) {
 		return nil, err.AddContext("Anchor", anchorString)
 	}
 
-	var epoch float64
-	if epoch, err = epochToFloat64(epochString); err != nil {
+	timestamp := reddit.Timestamp{}
+	if timestamp.UnmarshalJSON([]byte(epochString)); err != nil {
 		return nil, NewContextError(err, []ContextParam{
 			{"Anchor", anchorString},
 			{"Epoch String", epochString},
 		})
 	}
 
-	return &Anchor{fullID, epoch}, nil
+	return &Anchor{fullID, timestamp}, nil
 }
 
 func checkFullName(fullID string) *ContextError {
@@ -391,12 +344,4 @@ func checkFullName(fullID string) *ContextError {
 	}
 
 	return nil
-}
-
-func epochToFloat64(epoch string) (float64, error) {
-	i, err := strconv.ParseFloat(epoch, 64)
-	if err != nil {
-		return 0, err
-	}
-	return i, nil
 }
