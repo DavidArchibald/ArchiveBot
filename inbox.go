@@ -169,16 +169,34 @@ func (c *Client) SearchCommand(m *reddit.Message, arguments []string) *ContextEr
 		})
 	}
 
-	var results []redis.Z
+	// The round trip time to do this in a loop would be too expensive to justify. Hopefully memory doesn't overflow.
+	submissions, err := c.Redis.HGetAll(ctx, RedisSubmissions).Result()
+	if err != nil {
+		return NewContextError(err, []ContextParam{
+			{"Redis Key", RedisLinks},
+		})
+	}
+
+	var allResults []redis.Z
 	if len(searchResults) != 0 && len(flairs) != 0 {
-		results = c.ZIntersect(searchResults, flairs)
-		if len(results) > 25 {
-			results = results[:25]
-		}
+		allResults = c.ZIntersect(searchResults, flairs)
 	} else if len(searchResults) != 0 {
-		results = searchResults
+		allResults = searchResults
 	} else if len(flairs) != 0 {
-		results = flairs
+		allResults = flairs
+	}
+
+	results := make([]redis.Z, 0, 25)
+	i := 0
+	for _, result := range allResults {
+		if i >= 25 {
+			break
+		}
+
+		if _, ok := submissions[result.Member.(string)]; ok {
+			results[i] = result
+			i++
+		}
 	}
 
 	links := make([]string, 0, len(results))

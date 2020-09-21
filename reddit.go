@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -104,54 +103,54 @@ func NewRedditClient(client *Client, config *Config) (*Reddit, error) {
 // 	http.ListenAndServe()
 // }
 
-func (r *Reddit) getSubmissions(params reddit.ListOptions) (*SubmissionsResponse, *ContextError) {
-	c := r.client
+// func (r *Reddit) getSubmissions(params reddit.ListOptions) (*SubmissionsResponse, *ContextError) {
+// 	c := r.client
 
-	isForwards := true // Synonymous with using after
-	searchDescriptor := ""
-	if params.Before != "" && params.After != "" {
-		err := NewContextError(errors.New("both before and after param is set"), []ContextParam{
-			{"params", fmt.Sprint(params)},
-		})
-		c.dfatal(err)
-		return nil, err
-	} else if params.Before != "" {
-		isForwards = false
-		searchDescriptor = "before " + params.Before
-	} else if params.After != "" {
-		searchDescriptor = "after " + params.After
-	} else {
-		searchDescriptor = "from start"
-	}
+// 	isForwards := true // Synonymous with using after
+// 	searchDescriptor := ""
+// 	if params.Before != "" && params.After != "" {
+// 		err := NewContextError(errors.New("both before and after param is set"), []ContextParam{
+// 			{"params", fmt.Sprint(params)},
+// 		})
+// 		c.dfatal(err)
+// 		return nil, err
+// 	} else if params.Before != "" {
+// 		isForwards = false
+// 		searchDescriptor = "before " + params.Before
+// 	} else if params.After != "" {
+// 		searchDescriptor = "after " + params.After
+// 	} else {
+// 		searchDescriptor = "from start"
+// 	}
 
-	c.Logger.Infof("Reading submissions %s.", searchDescriptor)
-	posts, _, err := r.Subreddit.NewPosts(ctx, c.Config.Subreddit.Name, &reddit.ListOptions{
-		Limit:  c.Config.Reddit.SearchLimit,
-		After:  params.After,
-		Before: params.Before,
-	})
+// 	c.Logger.Infof("Reading submissions %s.", searchDescriptor)
+// 	posts, _, err := r.Subreddit.NewPosts(ctx, c.Config.Subreddit.Name, &reddit.ListOptions{
+// 		Limit:  c.Config.Reddit.SearchLimit,
+// 		After:  params.After,
+// 		Before: params.Before,
+// 	})
 
-	err = c.checkSubmissions(posts, isForwards)
-	if err != nil {
-		return nil, NewContextlessError(err).Wrap("could not check submissions")
-	}
+// 	err = c.checkSubmissions(posts, isForwards)
+// 	if err != nil {
+// 		return nil, NewContextlessError(err).Wrap("could not check submissions")
+// 	}
 
-	next := &reddit.ListOptions{}
-	*next = params
-	if params.Before != "" {
-		next.Before = posts.Before
-		if next.Before == "" {
-			next = nil
-		}
-	} else {
-		next.After = posts.After
-		if next.After == "" {
-			next = nil
-		}
-	}
+// 	next := &reddit.ListOptions{}
+// 	*next = params
+// 	if params.Before != "" {
+// 		next.Before = posts.Before
+// 		if next.Before == "" {
+// 			next = nil
+// 		}
+// 	} else {
+// 		next.After = posts.After
+// 		if next.After == "" {
+// 			next = nil
+// 		}
+// 	}
 
-	return &SubmissionsResponse{posts.Posts, next}, nil
-}
+// 	return &SubmissionsResponse{posts.Posts, next}, nil
+// }
 
 // NewRateLimit constructs a rate limit from a response.
 func (r *Reddit) NewRateLimit(resp *http.Response) (*RateLimit, *ContextError) {

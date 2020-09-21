@@ -1,13 +1,20 @@
 package main
 
-import "github.com/vartanbeno/go-reddit/reddit"
+import (
+	"time"
+)
 
 func main() {
 	client := NewClient("config.toml")
 	defer client.Close()
 
-	nextSubmissions := client.ReadPushshiftSubmissions()
-	readSubmissions(client, nextSubmissions)
+	go func() {
+		for !client.closed {
+			nextSubmissions := client.ReadPushshiftSubmissions()
+			readSubmissions(client, nextSubmissions)
+			time.After(15 * time.Minute)
+		}
+	}()
 
 	go analyzeSubmissions(client)
 	go client.ReplyToInbox()
@@ -48,13 +55,9 @@ func readSubmissions(client *Client, nextSubmissions func() ([]PushshiftSubmissi
 func analyzeSubmissions(client *Client) {
 	processName := "Analyze Submissions"
 
-	initialParams := reddit.ListOptions{
-		Limit: client.Config.Reddit.SearchLimit,
-	}
-
 	for !client.closed {
 		client.Processes.RoutineStart(processName)
-		err := client.AnalyzeSubmissions(initialParams)
+		err := client.AnalyzeSubmissions()
 
 		if err != nil {
 			client.dfatal(err)

@@ -56,8 +56,14 @@ const RedisFlairNames = "flairNames"
 // RedisFlairsPrefix is the prefix for a flair corresponding to a set of submission IDs sorted by date created.
 const RedisFlairsPrefix = "flairs" + RedisDelimiter
 
-// RedisSubmissions is a hash with keys of submission IDs to their JSON data.
+// RedisAllSubmissions is a hash with keys of submission IDs to their JSON data.
+const RedisAllSubmissions = "allSubmissions"
+
+// RedisSubmissions is a hash with keys of not deleted submission IDs to their JSON data.
 const RedisSubmissions = "submissions"
+
+// RedisRemovedSubmissions is a hash with keys of deleted submission IDs to their JSON data.
+const RedisRemovedSubmissions = "removedSubmissions"
 
 // RedisLinks is a hash with keys of process full names to a link formatted as [title](permalink).
 const RedisLinks = "links"
@@ -115,7 +121,7 @@ func (r *Redis) addSubmissions(pushshiftSubmissions []PushshiftSubmission) error
 		}
 	}
 
-	if err := r.HSet(ctx, RedisSubmissions, submissions...).Err(); err != nil {
+	if err := r.HSet(ctx, RedisAllSubmissions, submissions...).Err(); err != nil {
 		return fmt.Errorf("could not set submissions: %w", err)
 	}
 
@@ -206,17 +212,44 @@ func (r *Redis) getZSetRange(name string, rangeBy *redis.ZRangeBy) ([]redis.Z, *
 	return result, nil
 }
 
-func (r *Redis) updateVotes(submissions []*reddit.Post) *ContextError {
+func (r *Redis) updateVotes(submissions []PushshiftSubmission) *ContextError {
 	i := 0
 	updates := make([]*redis.Z, len(submissions))
 	for _, submission := range submissions {
-		updates[i] = &redis.Z{Score: float64(submission.Score), Member: submission.ID}
+		updates[i] = &redis.Z{Score: float64(submission.Ups), Member: submission.ID}
 		i++
 	}
 
 	if err := r.ZAdd(ctx, RedisUpvotes, updates...).Err(); err != nil {
 		return NewWrappedError("could not update submission upvotes", err, []ContextParam{
 			{"updates", fmt.Sprint(updates)},
+		})
+	}
+
+	return nil
+}
+
+func (r *Redis) setRemoved(submissions []PushshiftSubmission, removedMap map[string]bool) *ContextError {
+	removed := make([]interface{}, 0, len(submissions)*2)
+	unremoved := make([]interface{}, 0, len(submissions)*2)
+	for _, submission := range submissions {
+		isRemoved := removedMap[submission.ID]
+		if isRemoved {
+			removed = append(removed, submission.ID, submission)
+		} else {
+			unremoved = append(unremoved, submission.ID, submission)
+		}
+	}
+
+	if err := r.HSet(ctx, RedisSubmissions, unremoved).Err(); err != nil {
+		return NewWrappedError("could not update " + RedisSubmissions, err, []ContextParam{
+			{"updates", fmt.Sprint(unremoved)},
+		})
+	}
+
+	if err := r.HSet(ctx, RedisRemovedSubmissions, removed).Err(); err != nil {
+		return NewWrappedError("could not update " + RedisRemovedSubmissions, err, []ContextParam{
+			{"updates", fmt.Sprint(removed)},
 		})
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,8 +18,8 @@ import (
 
 // AnalyzeSubmissions analyzes Reddit submissions.
 // The parameters Before, After, and Count params are handled in AnalyzeSubmissions.
-func (c Client) AnalyzeSubmissions(initialParams reddit.ListOptions) *ContextError {
-	submissions, err := c.Redis.getHashMap(RedisSubmissions)
+func (c Client) AnalyzeSubmissions() *ContextError {
+	submissions, err := c.Redis.getHashMap(RedisAllSubmissions)
 	if err != nil {
 		if !c.IsProduction {
 			return err
@@ -26,7 +27,7 @@ func (c Client) AnalyzeSubmissions(initialParams reddit.ListOptions) *ContextErr
 		err.LogError(c.Logger)
 	}
 
-	submissions, err = c.analyzeRedditSubmissions(submissions, initialParams)
+	submissions, err = c.analyzeRedditSubmissions(submissions)
 	if err != nil {
 		if !c.IsProduction {
 			return err
@@ -57,38 +58,46 @@ func (c Client) AnalyzeSubmissions(initialParams reddit.ListOptions) *ContextErr
 	return nil
 }
 
-func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, params reddit.ListOptions) (map[string]string, *ContextError) {
-	currentAnchor, ce := c.Redis.getAnchor(RedisSearchCurrent)
-	if ce != nil {
-		if ce.Unwrap().Error() != redis.Nil.Error() {
-			ce.LogError(c.Logger)
-		}
-		currentAnchor = nil
-	}
+// PostListing is a
+type PostListing struct {
+	Data struct {
+		Children []PushshiftSubmission `json:"children"`
+	} `json:"data"`
+}
 
-	if currentAnchor != nil {
-		forwards, err := c.Redis.Get(ctx, RedisSearchIsForwards).Result()
-		if err != nil {
-			c.Logger.Errorf("Could not get search direction, default to backwards: %w", err)
-			params.Before = currentAnchor.FullID
-		} else {
-			if forwards == "true" {
-				params.After = currentAnchor.FullID
-			} else {
-				params.Before = currentAnchor.FullID
-			}
-		}
-	}
-
+func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string) (map[string]string, *ContextError) {
 	totalSubmissions := 0
-	for {
-		c.Reddit.Listings.GetPosts(ctx)
-		r, err := c.Reddit.getSubmissions(params)
-		if err != nil {
-			return submissionsMap, err
+	for len(submissionsMap) > 0 {
+		ids := make([]string, 0, c.Config.Reddit.SearchLimit)
+		removed := make(map[string]bool, c.Config.Reddit.SearchLimit)
+		for _, submission := range submissionsMap {
+			if len(ids) >= c.Config.Reddit.SearchLimit {
+				break
+			}
+
+			ids = append(ids, submission)
+			removed[submission] = true
 		}
 
-		submissions := r.Submissions
+		c.Logger.Infof("Reading submission IDs: %v", ids)
+
+		_, resp, err := c.Reddit.Listings.GetPosts(ctx, ids...)
+		if err != nil {
+			return submissionsMap, NewContextlessError(err)
+		}
+
+		l := &PostListing{}
+		err = json.NewDecoder(resp.Body).Decode(l)
+		if err != nil {
+			return submissionsMap, NewContextlessError(err)
+		}
+
+		submissions := l.Data.Children
+		err = c.Redis.addSubmissions(submissions)
+		if err != nil {
+			return submissionsMap, NewContextlessError(err)
+		}
+
 		submissionCount := len(submissions)
 		totalSubmissions += submissionCount
 
@@ -98,16 +107,15 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 
 		for _, submission := range submissions {
 			delete(submissionsMap, submission.ID)
+			removed[submission.ID] = false
 		}
 
 		if ce := c.Redis.updateVotes(submissions); ce != nil {
 			c.dfatal(ce)
 		}
 
-		if r.Next != nil {
-			params = *r.Next
-		} else {
-			break
+		if ce := c.Redis.setRemoved(submissions, removed); ce != nil {
+			c.dfatal(ce)
 		}
 	}
 
@@ -116,49 +124,49 @@ func (c *Client) analyzeRedditSubmissions(submissionsMap map[string]string, para
 	return submissionsMap, nil
 }
 
-func (c *Client) checkSubmissions(posts *reddit.Posts, isForwards bool) error {
-	// EDGE CASE: How to deal with <3 submissions?
-	if len(posts.Posts) == 0 {
-		// If you have reached the beginning or the end and are searching in that direction nothing to do.
-		if (posts.After == "" && isForwards) || (posts.Before == "" && !isForwards) {
-			return nil
-		}
-	}
+// func (c *Client) checkSubmissions(posts *reddit.Posts, isForwards bool) error {
+// 	// EDGE CASE: How to deal with <3 submissions?
+// 	if len(posts.Posts) == 0 {
+// 		// If you have reached the beginning or the end and are searching in that direction nothing to do.
+// 		if (posts.After == "" && isForwards) || (posts.Before == "" && !isForwards) {
+// 			return nil
+// 		}
+// 	}
 
-	r := c.Redis
-	var currentSubmission *reddit.Post
-	if isForwards {
-		lastSubmission := posts.Posts[len(posts.Posts)-1]
-		if lastSubmission.Created != nil {
-			c.Logger.Info("Time created not given for submission ID: %s (permalink: %s)", lastSubmission.FullID, lastSubmission.Permalink)
-		} else if c.Search.End == nil || lastSubmission.Created.Before(c.Search.End.Epoch) {
-			if ce := r.setAnchor(RedisSearchEnd, lastSubmission.FullID, *lastSubmission.Created); ce != nil {
-				c.dfatal(ce)
-			}
-		}
+// 	r := c.Redis
+// 	var currentSubmission *reddit.Post
+// 	if isForwards {
+// 		lastSubmission := posts.Posts[len(posts.Posts)-1]
+// 		if lastSubmission.Created != nil {
+// 			c.Logger.Info("Time created not given for submission ID: %s (permalink: %s)", lastSubmission.FullID, lastSubmission.Permalink)
+// 		} else if c.Search.End == nil || lastSubmission.Created.Before(c.Search.End.Epoch) {
+// 			if ce := r.setAnchor(RedisSearchEnd, lastSubmission.FullID, *lastSubmission.Created); ce != nil {
+// 				c.dfatal(ce)
+// 			}
+// 		}
 
-		currentSubmission = lastSubmission
-	} else {
-		firstSubmission := posts.Posts[0]
-		if firstSubmission.Created == nil {
-			c.Logger.Info("Time created not given for submission ID: %s (permalink: %s)", firstSubmission.FullID, firstSubmission.Permalink)
-		} else if c.Search.Start == nil || !c.Search.Start.Epoch.Before(*firstSubmission.Created) {
-			if ce := r.setAnchor(RedisSearchStart, firstSubmission.FullID, *firstSubmission.Created); ce != nil {
-				c.dfatal(ce)
-			}
-		}
+// 		currentSubmission = lastSubmission
+// 	} else {
+// 		firstSubmission := posts.Posts[0]
+// 		if firstSubmission.Created == nil {
+// 			c.Logger.Info("Time created not given for submission ID: %s (permalink: %s)", firstSubmission.FullID, firstSubmission.Permalink)
+// 		} else if c.Search.Start == nil || !c.Search.Start.Epoch.Before(*firstSubmission.Created) {
+// 			if ce := r.setAnchor(RedisSearchStart, firstSubmission.FullID, *firstSubmission.Created); ce != nil {
+// 				c.dfatal(ce)
+// 			}
+// 		}
 
-		currentSubmission = firstSubmission
-	}
+// 		currentSubmission = firstSubmission
+// 	}
 
-	if currentSubmission.Created != nil {
-		if ce := r.setCurrentAnchor(RedisSearchCurrent, currentSubmission.FullID, *currentSubmission.Created, isForwards); ce != nil {
-			c.dfatal(ce)
-		}
-	}
+// 	if currentSubmission.Created != nil {
+// 		if ce := r.setCurrentAnchor(RedisSearchCurrent, currentSubmission.FullID, *currentSubmission.Created, isForwards); ce != nil {
+// 			c.dfatal(ce)
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func (c *Client) makePath(route string, query url.Values) string {
 	u, err := url.Parse(c.Config.Reddit.URL)

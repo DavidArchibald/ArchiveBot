@@ -15,6 +15,7 @@ type Processes struct {
 	ticker        *time.Ticker
 	routineTicker chan struct{}
 	wg            *sync.WaitGroup
+	closeFuncs    map[string]func()
 }
 
 // reservation holds the reserved API info calls.
@@ -24,16 +25,17 @@ type reservation struct {
 	buffer      uint64
 }
 
-// NewProcesses creates a structue for managing
+// NewProcesses creates a structure for managing processes.
 func NewProcesses(client *Client, config *Config) *Processes {
 	var reserveLock *sync.Mutex
-	var reserved = make(map[string]reservation)
-	var nextReserve = make(map[string]reservation)
+	reserved := make(map[string]reservation)
+	nextReserve := make(map[string]reservation)
 	ticker := time.NewTicker(config.Application.TickSpeed)
-	var routineTicker = make(chan struct{})
+	routineTicker := make(chan struct{})
 	wg := &sync.WaitGroup{}
+	closeFuncs := make(map[string]func())
 
-	return &Processes{client, config, reserveLock, reserved, nextReserve, ticker, routineTicker, wg}
+	return &Processes{client, config, reserveLock, reserved, nextReserve, ticker, routineTicker, wg, closeFuncs}
 }
 
 // Start begins the process loop.
@@ -69,11 +71,20 @@ func (p *Processes) Start() {
 	close(p.routineTicker)
 }
 
+// OnClose adds a function called when a process closes.
+func (p *Processes) OnClose(processName string, closeFunc func()) {
+	p.closeFuncs[processName] = closeFunc
+}
+
 // Close closes the process loop.
 func (p *Processes) Close() {
 	p.client.closed = true
 	<-p.routineTicker
 	close(p.routineTicker)
+
+	for _, closeFunc := range p.closeFuncs {
+		closeFunc()
+	}
 }
 
 // RoutineStart will begin a routine.
